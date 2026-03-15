@@ -1,4 +1,3 @@
-cat > ~/src/weekendr-core/weekendr/locationweather.go << 'EOF'
 package weekendr
 
 // DayContext holds the location and weather context for a single event day.
@@ -31,4 +30,3 @@ func (c *Client) GetDayContext(eventID string, date string) (*DayContext, error)
 		Condition:   "Partly cloudy",
 	}, nil
 }
-EOF

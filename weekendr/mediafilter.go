@@ -1,4 +1,3 @@
-cat > ~/src/weekendr-core/weekendr/mediafilter.go << 'EOF'
 package weekendr
 
 // MediaItem represents a photo or video in the event album.
@@ -32,4 +31,3 @@ func (c *Client) GetMediaItems(eventID string) ([]*MediaItem, error) {
 func (c *Client) RemoveMediaItem(eventID string, itemID string) error {
 	return nil
 }
-EOF

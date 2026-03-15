@@ -1,4 +1,3 @@
-cat > ~/src/weekendr-core/weekendr/event.go << 'EOF'
 package weekendr
 
 // EventMode represents whether an event is live or retrospective.
@@ -55,4 +54,3 @@ func (c *Client) GetEvent(eventID string) (*Event, error) {
 		State: "active",
 	}, nil
 }
-EOF

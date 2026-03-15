@@ -1,4 +1,3 @@
-cat > ~/src/weekendr-core/weekendr/metawatcher.go << 'EOF'
 package weekendr
 
 // Participant represents a device participating in an event.
@@ -35,4 +34,3 @@ func (c *Client) GetParticipants(eventID string) ([]*Participant, error) {
 func (c *Client) AnnounceDevice(eventID string) error {
 	return nil
 }
-EOF
