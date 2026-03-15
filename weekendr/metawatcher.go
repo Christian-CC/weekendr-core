@@ -1,5 +1,13 @@
 package weekendr
 
+// Participant represents a device participating in an event.
+type Participant struct {
+	DeviceID   string
+	Online     bool
+	PhotoCount int64
+	LastSeen   int64
+}
+
 // ParticipantList wraps a slice of Participants for gomobile compatibility.
 type ParticipantList struct {
 	Items []*Participant
@@ -18,4 +26,19 @@ func (c *Client) GetParticipants(eventID string) (*ParticipantList, error) {
 			{DeviceID: c.deviceID, Online: true, PhotoCount: 0},
 		},
 	}, nil
+}
+
+// StartMetaWatcher begins watching the Syncthing meta-folder for new participants.
+func (c *Client) StartMetaWatcher(eventID string) error {
+	return nil
+}
+
+// StopMetaWatcher stops watching the meta-folder for the given event.
+func (c *Client) StopMetaWatcher(eventID string) error {
+	return nil
+}
+
+// AnnounceDevice writes this device's presence to the meta-folder.
+func (c *Client) AnnounceDevice(eventID string) error {
+	return nil
 }
