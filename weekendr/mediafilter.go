@@ -1,3 +1,5 @@
+package weekendr
+
 // MediaItemList wraps a slice of MediaItems for gomobile compatibility.
 type MediaItemList struct {
 	Items []*MediaItem

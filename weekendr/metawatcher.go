@@ -1,3 +1,5 @@
+package weekendr
+
 // ParticipantList wraps a slice of Participants for gomobile compatibility.
 type ParticipantList struct {
 	Items []*Participant
