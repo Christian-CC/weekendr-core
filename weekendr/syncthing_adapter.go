@@ -72,6 +72,13 @@ func (c *Client) StartSyncthing(dataDir string) error {
 	adapter := &sushitrainAdapter{st: st}
 	configureServers(adapter)
 
+	// Disable the dynamic relay client entirely. Without this,
+	// Syncthing spawns dynamicClient.serve() which does HTTP lookups
+	// against public relay pools and crashes on iOS.
+	if err := st.SetRelaysEnabled(false); err != nil {
+		return fmt.Errorf("disabling dynamic relays: %w", err)
+	}
+
 	if err := st.Start(); err != nil {
 		return fmt.Errorf("sushitrain Start: %w", err)
 	}
