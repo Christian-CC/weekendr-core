@@ -11,12 +11,36 @@ import (
 	"strings"
 )
 
+// SyncthingClient is the subset of the Syncthing API required by Weekendr.
+//
+// In production this interface is satisfied by an adapter around
+// *sushitrain.Client (SushitrainCore module). The adapter maps:
+//
+//	AddFolder   → sushitrain.Client.AddSpecialFolder(id, "basic", path, type)
+//	AddPeer     → sushitrain.Client.AddPeer(deviceID)
+//	ShareFolder → sushitrain.Client.FolderWithID(id).ShareWithDevice(deviceID, true, "")
+//
+// When syncthing is nil (tests, offline mode) all P2P registration calls are
+// skipped gracefully; OS directories are still created as before.
+type SyncthingClient interface {
+	// AddFolder registers a new folder with Syncthing at the given OS path.
+	// folderType must be "sendonly", "receiveonly", or "sendreceive".
+	AddFolder(folderID, folderPath, folderType string) error
+
+	// AddPeer adds a remote device to Syncthing so connections can be made.
+	AddPeer(deviceID string) error
+
+	// ShareFolder shares an already-registered folder with a remote device.
+	ShareFolder(folderID, deviceID string) error
+}
+
 // Client is the main entry point for the Weekendr Go core.
 // All state is held here and accessed via methods.
 type Client struct {
-	deviceID string
-	dataDir  string
-	watchers map[string]chan struct{}
+	deviceID  string
+	dataDir   string
+	watchers  map[string]chan struct{}
+	syncthing SyncthingClient // nil until SetSyncthing is called
 }
 
 const deviceIDFile = "device_id.json"
@@ -81,6 +105,13 @@ func NewClient(dataDir string) (*Client, error) {
 		return nil, err
 	}
 	return &Client{deviceID: id, dataDir: dataDir, watchers: make(map[string]chan struct{})}, nil
+}
+
+// SetSyncthing wires a live Syncthing back-end into the client.
+// Call this before CreateEvent, JoinEvent, or StartMetaWatcher to enable P2P sync.
+// The concrete value must be an adapter around *sushitrain.Client.
+func (c *Client) SetSyncthing(s SyncthingClient) {
+	c.syncthing = s
 }
 
 // DeviceID returns this device's Syncthing device ID.

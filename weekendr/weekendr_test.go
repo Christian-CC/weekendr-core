@@ -1,6 +1,7 @@
 package weekendr
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -185,6 +186,47 @@ func TestMetaWatcherDiscovery(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Error("MetaWatcher did not create participant photo folder within 2 seconds")
+}
+
+func TestAnnounceDevice(t *testing.T) {
+	c := newTestClient(t)
+	eventID := "announce-event"
+
+	// Create the meta folder first (AnnounceDevice creates devices/ sub-dir itself).
+	metaPath := filepath.Join(c.dataDir, "events", eventID, "meta")
+	if err := os.MkdirAll(metaPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.AnnounceDevice(eventID); err != nil {
+		t.Fatalf("AnnounceDevice: %v", err)
+	}
+
+	// File must exist at devices/{deviceID}.json
+	annPath := filepath.Join(c.dataDir, "events", eventID, "meta", "devices", c.deviceID+".json")
+	raw, err := os.ReadFile(annPath)
+	if err != nil {
+		t.Fatalf("announcement file not created: %v", err)
+	}
+
+	var ann struct {
+		DeviceID    string `json:"device_id"`
+		AnnouncedAt string `json:"announced_at"`
+	}
+	if err := json.Unmarshal(raw, &ann); err != nil {
+		t.Fatalf("announcement file is not valid JSON: %v", err)
+	}
+	if ann.DeviceID != c.deviceID {
+		t.Errorf("device_id: got %q, want %q", ann.DeviceID, c.deviceID)
+	}
+	if ann.AnnouncedAt == "" {
+		t.Error("announced_at must not be empty")
+	}
+
+	// announced_at must parse as RFC3339
+	if _, err := time.Parse(time.RFC3339, ann.AnnouncedAt); err != nil {
+		t.Errorf("announced_at %q is not RFC3339: %v", ann.AnnouncedAt, err)
+	}
 }
 
 func TestMetaWatcherIgnoresOwnDevice(t *testing.T) {

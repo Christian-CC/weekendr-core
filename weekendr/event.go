@@ -39,6 +39,9 @@ type CreateEventParams struct {
 // createEventFolders creates the Syncthing folders for an event on this device:
 //   - A SendOnly photo folder for this device's own uploads
 //   - A SendReceive meta folder shared by all participants
+//
+// It first creates the OS directories, then (when c.syncthing != nil) registers
+// both folders with Syncthing so that P2P sync can take place.
 func createEventFolders(c *Client, event *Event) error {
 	deviceIDLower := strings.ToLower(c.deviceID)
 	eventIDLower := strings.ToLower(event.ID)
@@ -54,6 +57,20 @@ func createEventFolders(c *Client, event *Event) error {
 	metaPath := filepath.Join(c.dataDir, "events", event.ID, "meta")
 	if err := os.MkdirAll(metaPath, 0700); err != nil {
 		return fmt.Errorf("creating meta folder: %w", err)
+	}
+
+	if c.syncthing != nil {
+		// Register this device's SendOnly photo folder with Syncthing.
+		// Other participants will add a ReceiveOnly mirror when they discover us.
+		if err := c.syncthing.AddFolder(event.PhotoFolderID, photoPath, "sendonly"); err != nil {
+			return fmt.Errorf("registering photo folder with Syncthing: %w", err)
+		}
+
+		// Register the shared SendReceive meta folder. All participants sync
+		// device announcements and event metadata through this folder.
+		if err := c.syncthing.AddFolder(event.MetaFolderID, metaPath, "sendreceive"); err != nil {
+			return fmt.Errorf("registering meta folder with Syncthing: %w", err)
+		}
 	}
 
 	return nil
@@ -95,12 +112,53 @@ func (c *Client) GetEvent(eventID string) (*Event, error) {
 	}, nil
 }
 
-// addParticipantPhotoFolder creates a ReceiveOnly folder for a discovered participant's photos.
-// It is called internally by the MetaWatcher when a new device is discovered.
+// addParticipantPhotoFolder sets up everything needed to receive photos from a
+// newly discovered participant. It is called by the MetaWatcher goroutine.
+//
+// OS side: creates the local directory for the participant's photos.
+//
+// Syncthing side (when c.syncthing != nil):
+//  1. Registers the remote device with Syncthing (AddPeer).
+//  2. Registers a ReceiveOnly folder for the participant's photos.
+//  3. Shares the meta folder with the new participant so both devices sync
+//     event metadata bidirectionally.
+//  4. Shares our own SendOnly photo folder with the participant so they can
+//     pull our photos.
 func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) error {
 	participantPath := filepath.Join(c.dataDir, "events", eventID, "photos", participantDeviceID)
 	if err := os.MkdirAll(participantPath, 0700); err != nil {
 		return fmt.Errorf("creating participant photo folder: %w", err)
 	}
+
+	if c.syncthing == nil {
+		return nil
+	}
+
+	eventIDLower := strings.ToLower(eventID)
+	participantIDLower := strings.ToLower(participantDeviceID)
+
+	// 1. Add the remote device to Syncthing so we can connect to it.
+	if err := c.syncthing.AddPeer(participantDeviceID); err != nil {
+		return fmt.Errorf("adding participant device to Syncthing: %w", err)
+	}
+
+	// 2. Register a ReceiveOnly folder to pull the participant's photos.
+	participantPhotoFolderID := fmt.Sprintf("photos-%s-%s", eventIDLower, participantIDLower)
+	if err := c.syncthing.AddFolder(participantPhotoFolderID, participantPath, "receiveonly"); err != nil {
+		return fmt.Errorf("registering participant photo folder with Syncthing: %w", err)
+	}
+
+	// 3. Share the meta folder with the new participant for bidirectional metadata sync.
+	metaFolderID := fmt.Sprintf("meta-%s", eventIDLower)
+	if err := c.syncthing.ShareFolder(metaFolderID, participantDeviceID); err != nil {
+		return fmt.Errorf("sharing meta folder with participant: %w", err)
+	}
+
+	// 4. Share our SendOnly photo folder with the participant so they can receive our photos.
+	ourPhotoFolderID := fmt.Sprintf("photos-%s-%s", eventIDLower, strings.ToLower(c.deviceID))
+	if err := c.syncthing.ShareFolder(ourPhotoFolderID, participantDeviceID); err != nil {
+		return fmt.Errorf("sharing our photo folder with participant: %w", err)
+	}
+
 	return nil
 }

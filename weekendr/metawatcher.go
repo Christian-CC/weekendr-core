@@ -1,6 +1,8 @@
 package weekendr
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -39,8 +41,13 @@ func (c *Client) GetParticipants(eventID string) (*ParticipantList, error) {
 const watcherPollInterval = 100 * time.Millisecond
 
 // StartMetaWatcher begins watching the Syncthing meta-folder for new participants.
-// When a new devices/{deviceID}.json file appears, it calls addParticipantPhotoFolder
-// for that device and tracks it in knownDevices to avoid duplicate calls.
+// When a new devices/{deviceID}.json file appears it:
+//  1. Reads the JSON written by AnnounceDevice to validate the deviceID.
+//  2. Calls addParticipantPhotoFolder, which creates the OS directory and (when
+//     c.syncthing != nil) registers the ReceiveOnly folder and shares the meta
+//     and photo folders with the new participant via Syncthing.
+//
+// Each device is processed at most once (tracked in knownDevices).
 func (c *Client) StartMetaWatcher(eventID string) error {
 	if _, running := c.watchers[eventID]; running {
 		return nil
@@ -76,7 +83,21 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 					if !strings.HasSuffix(name, ".json") {
 						continue
 					}
+					// Primary source: deviceID is encoded in the filename.
 					deviceID := strings.TrimSuffix(name, ".json")
+
+					// Also read the JSON written by AnnounceDevice to validate
+					// and to obtain any extra fields (e.g. future shared secrets).
+					// If the JSON is absent or malformed we fall back silently.
+					jsonPath := filepath.Join(devicesDir, name)
+					if raw, readErr := os.ReadFile(jsonPath); readErr == nil {
+						var ann deviceAnnouncement
+						if jsonErr := json.Unmarshal(raw, &ann); jsonErr == nil &&
+							ann.DeviceID != "" && ann.DeviceID != deviceID {
+							log.Printf("metawatcher: %s: JSON device_id %q != filename %q, using filename",
+								name, ann.DeviceID, deviceID)
+						}
+					}
 
 					// Skip our own device — we already have a SendOnly folder.
 					if deviceID == c.deviceID {
@@ -108,7 +129,36 @@ func (c *Client) StopMetaWatcher(eventID string) error {
 	return nil
 }
 
-// AnnounceDevice writes this device's presence to the meta-folder.
+// deviceAnnouncement is the JSON written by AnnounceDevice and read by MetaWatcher.
+type deviceAnnouncement struct {
+	DeviceID    string `json:"device_id"`
+	AnnouncedAt string `json:"announced_at"`
+}
+
+// AnnounceDevice writes this device's presence to the meta-folder as
+//
+//	devices/{deviceID}.json
+//
+// so that MetaWatcher on peer devices can discover this device and set up
+// the Syncthing folders for P2P sync.
 func (c *Client) AnnounceDevice(eventID string) error {
+	devicesDir := filepath.Join(c.dataDir, "events", eventID, "meta", "devices")
+	if err := os.MkdirAll(devicesDir, 0700); err != nil {
+		return fmt.Errorf("creating devices dir: %w", err)
+	}
+
+	ann := deviceAnnouncement{
+		DeviceID:    c.deviceID,
+		AnnouncedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	data, err := json.Marshal(ann)
+	if err != nil {
+		return fmt.Errorf("marshaling device announcement: %w", err)
+	}
+
+	annPath := filepath.Join(devicesDir, c.deviceID+".json")
+	if err := os.WriteFile(annPath, data, 0600); err != nil {
+		return fmt.Errorf("writing device announcement: %w", err)
+	}
 	return nil
 }
