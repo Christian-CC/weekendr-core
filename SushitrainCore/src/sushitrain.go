@@ -1500,12 +1500,17 @@ func (clt *Client) SetDiscoveryAddresses(addrs *ListOfStrings) error {
 
 func (clt *Client) SetRelayAddresses(addrs *ListOfStrings) error {
 	return clt.changeConfiguration(func(cfg *config.Configuration) {
-		cfg.Options.RawRelayServers = addrs.data
+		// RawRelayServers was removed; relay addresses are now part of
+		// RawListenAddresses. Filter out existing relay:// entries and
+		// append the new ones.
+		var nonRelay []string
+		for _, a := range cfg.Options.RawListenAddresses {
+			if !strings.HasPrefix(a, "relay://") {
+				nonRelay = append(nonRelay, a)
+			}
+		}
+		cfg.Options.RawListenAddresses = append(nonRelay, addrs.data...)
 
-		// When setting an empty list of servers the expectation is that relay usage stops. However on restart and
-		// reading the config file, the default value of this field will be filled in (as there are no `relayServer`
-		// elements in the XML). Thus we also disable it here. As there is a separate toggle to enable it, we don't
-		// do that here when a nonempty list is set.
 		if len(addrs.data) == 0 {
 			cfg.Options.RelaysEnabled = false
 		}
