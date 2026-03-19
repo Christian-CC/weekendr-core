@@ -16,9 +16,11 @@ import (
 // In production this interface is satisfied by an adapter around
 // *sushitrain.Client (SushitrainCore module). The adapter maps:
 //
-//	AddFolder   → sushitrain.Client.AddSpecialFolder(id, "basic", path, type)
-//	AddPeer     → sushitrain.Client.AddPeer(deviceID)
-//	ShareFolder → sushitrain.Client.FolderWithID(id).ShareWithDevice(deviceID, true, "")
+//	AddFolder          → sushitrain.Client.AddSpecialFolder(id, "basic", path, type)
+//	AddPeer            → sushitrain.Client.AddPeer(deviceID)
+//	ShareFolder        → sushitrain.Client.FolderWithID(id).ShareWithDevice(deviceID, true, "")
+//	SetDiscoveryServers → sushitrain.Client.SetDiscoveryAddresses(List(urls))
+//	SetRelayServers    → sushitrain.Client.SetRelayAddresses(List(urls))
 //
 // When syncthing is nil (tests, offline mode) all P2P registration calls are
 // skipped gracefully; OS directories are still created as before.
@@ -32,6 +34,14 @@ type SyncthingClient interface {
 
 	// ShareFolder shares an already-registered folder with a remote device.
 	ShareFolder(folderID, deviceID string) error
+
+	// SetDiscoveryServers replaces the global discovery server list with the
+	// given URLs. Pass a single private URL to avoid the public Syncthing pool.
+	SetDiscoveryServers(urls []string) error
+
+	// SetRelayServers replaces the relay server list with the given URLs.
+	// Pass a single private relay URL to avoid the public Syncthing relay pool.
+	SetRelayServers(urls []string) error
 }
 
 // Client is the main entry point for the Weekendr Go core.
@@ -107,11 +117,14 @@ func NewClient(dataDir string) (*Client, error) {
 	return &Client{deviceID: id, dataDir: dataDir, watchers: make(map[string]chan struct{})}, nil
 }
 
-// SetSyncthing wires a live Syncthing back-end into the client.
+// SetSyncthing wires a live Syncthing back-end into the client and immediately
+// configures it to use Weekendr's private discovery and relay servers exclusively.
 // Call this before CreateEvent, JoinEvent, or StartMetaWatcher to enable P2P sync.
 // The concrete value must be an adapter around *sushitrain.Client.
 func (c *Client) SetSyncthing(s SyncthingClient) {
 	c.syncthing = s
+	_ = s.SetDiscoveryServers([]string{"https://discovery.getweekendr.app"})
+	_ = s.SetRelayServers([]string{"relay://relay.getweekendr.app:22067"})
 }
 
 // DeviceID returns this device's Syncthing device ID.
