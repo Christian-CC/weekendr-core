@@ -56,7 +56,7 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 	stop := make(chan struct{})
 	c.watchers[eventID] = stop
 
-	devicesDir := filepath.Join(c.dataDir, "events", eventID, "meta", "devices")
+	devicesDir := filepath.Join(c.dataDir, eventID+"-meta", "devices")
 
 	go func() {
 		knownDevices := map[string]bool{}
@@ -142,7 +142,7 @@ type deviceAnnouncement struct {
 // so that MetaWatcher on peer devices can discover this device and set up
 // the Syncthing folders for P2P sync.
 func (c *Client) AnnounceDevice(eventID string) error {
-	devicesDir := filepath.Join(c.dataDir, "events", eventID, "meta", "devices")
+	devicesDir := filepath.Join(c.dataDir, eventID+"-meta", "devices")
 	if err := os.MkdirAll(devicesDir, 0700); err != nil {
 		return fmt.Errorf("creating devices dir: %w", err)
 	}

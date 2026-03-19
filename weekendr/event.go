@@ -1,11 +1,19 @@
 package weekendr
 
 import (
+	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// generateEventID creates a URL-safe, lowercase random event ID.
+func generateEventID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return fmt.Sprintf("evt-%x", b)
+}
 
 // EventMode represents whether an event is live or retrospective.
 type EventMode string
@@ -43,20 +51,26 @@ type CreateEventParams struct {
 // It first creates the OS directories, then (when c.syncthing != nil) registers
 // both folders with Syncthing so that P2P sync can take place.
 func createEventFolders(c *Client, event *Event) error {
-	deviceIDLower := strings.ToLower(c.deviceID)
 	eventIDLower := strings.ToLower(event.ID)
+	deviceIDLower := strings.ToLower(c.deviceID)
 
-	event.PhotoFolderID = fmt.Sprintf("photos-%s-%s", eventIDLower, deviceIDLower)
-	event.MetaFolderID = fmt.Sprintf("meta-%s", eventIDLower)
+	event.PhotoFolderID = "photos-" + eventIDLower + "-" + deviceIDLower
+	event.MetaFolderID = "meta-" + eventIDLower
 
-	photoPath := filepath.Join(c.dataDir, "events", event.ID, "photos", c.deviceID)
+	photoPath := filepath.Join(c.dataDir, event.ID+"-"+c.deviceID+"-photos")
 	if err := os.MkdirAll(photoPath, 0700); err != nil {
 		return fmt.Errorf("creating photo folder: %w", err)
 	}
+	if err := os.MkdirAll(filepath.Join(photoPath, ".stfolder"), 0755); err != nil {
+		return fmt.Errorf("creating photo .stfolder marker: %w", err)
+	}
 
-	metaPath := filepath.Join(c.dataDir, "events", event.ID, "meta")
+	metaPath := filepath.Join(c.dataDir, event.ID+"-meta")
 	if err := os.MkdirAll(metaPath, 0700); err != nil {
 		return fmt.Errorf("creating meta folder: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(metaPath, ".stfolder"), 0755); err != nil {
+		return fmt.Errorf("creating meta .stfolder marker: %w", err)
 	}
 
 	if c.syncthing != nil {
@@ -79,7 +93,7 @@ func createEventFolders(c *Client, event *Event) error {
 // CreateEvent creates a new event on the server and returns the event ID and invite secret.
 func (c *Client) CreateEvent(params *CreateEventParams) (*Event, error) {
 	event := &Event{
-		ID:    "stub-event-id",
+		ID:    generateEventID(),
 		Name:  params.Name,
 		Mode:  params.Mode,
 		State: "upcoming",
@@ -90,10 +104,10 @@ func (c *Client) CreateEvent(params *CreateEventParams) (*Event, error) {
 	return event, nil
 }
 
-// JoinEvent joins an existing event using an invite secret.
-func (c *Client) JoinEvent(inviteSecret string) (*Event, error) {
+// JoinEvent joins an existing event using an invite secret and the resolved event ID.
+func (c *Client) JoinEvent(inviteSecret string, eventID string) (*Event, error) {
 	event := &Event{
-		ID:    "stub-event-id",
+		ID:    eventID,
 		Name:  "Stub Event",
 		State: "active",
 	}
@@ -125,9 +139,12 @@ func (c *Client) GetEvent(eventID string) (*Event, error) {
 //  4. Shares our own SendOnly photo folder with the participant so they can
 //     pull our photos.
 func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) error {
-	participantPath := filepath.Join(c.dataDir, "events", eventID, "photos", participantDeviceID)
+	participantPath := filepath.Join(c.dataDir, eventID+"-"+participantDeviceID+"-photos")
 	if err := os.MkdirAll(participantPath, 0700); err != nil {
 		return fmt.Errorf("creating participant photo folder: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(participantPath, ".stfolder"), 0755); err != nil {
+		return fmt.Errorf("creating participant .stfolder marker: %w", err)
 	}
 
 	if c.syncthing == nil {
@@ -143,19 +160,19 @@ func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) 
 	}
 
 	// 2. Register a ReceiveOnly folder to pull the participant's photos.
-	participantPhotoFolderID := fmt.Sprintf("photos-%s-%s", eventIDLower, participantIDLower)
+	participantPhotoFolderID := "photos-" + eventIDLower + "-" + participantIDLower
 	if err := c.syncthing.AddFolder(participantPhotoFolderID, participantPath, "receiveonly"); err != nil {
 		return fmt.Errorf("registering participant photo folder with Syncthing: %w", err)
 	}
 
 	// 3. Share the meta folder with the new participant for bidirectional metadata sync.
-	metaFolderID := fmt.Sprintf("meta-%s", eventIDLower)
+	metaFolderID := "meta-" + eventIDLower
 	if err := c.syncthing.ShareFolder(metaFolderID, participantDeviceID); err != nil {
 		return fmt.Errorf("sharing meta folder with participant: %w", err)
 	}
 
 	// 4. Share our SendOnly photo folder with the participant so they can receive our photos.
-	ourPhotoFolderID := fmt.Sprintf("photos-%s-%s", eventIDLower, strings.ToLower(c.deviceID))
+	ourPhotoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(c.deviceID)
 	if err := c.syncthing.ShareFolder(ourPhotoFolderID, participantDeviceID); err != nil {
 		return fmt.Errorf("sharing our photo folder with participant: %w", err)
 	}

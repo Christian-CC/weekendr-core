@@ -76,13 +76,13 @@ func TestCreateEventFolders(t *testing.T) {
 	}
 
 	// Photo directory must exist
-	photoPath := filepath.Join(c.dataDir, "events", event.ID, "photos", c.deviceID)
+	photoPath := filepath.Join(c.dataDir, event.ID+"-"+c.deviceID+"-photos")
 	if _, err := os.Stat(photoPath); err != nil {
 		t.Errorf("photo dir not created: %v", err)
 	}
 
 	// Meta directory must exist
-	metaPath := filepath.Join(c.dataDir, "events", event.ID, "meta")
+	metaPath := filepath.Join(c.dataDir, event.ID+"-meta")
 	if _, err := os.Stat(metaPath); err != nil {
 		t.Errorf("meta dir not created: %v", err)
 	}
@@ -104,11 +104,11 @@ func TestCreateEvent(t *testing.T) {
 	}
 
 	// Directories must exist on disk
-	photoPath := filepath.Join(c.dataDir, "events", ev.ID, "photos", c.deviceID)
+	photoPath := filepath.Join(c.dataDir, ev.ID+"-"+c.deviceID+"-photos")
 	if _, err := os.Stat(photoPath); err != nil {
 		t.Errorf("photo dir not created by CreateEvent: %v", err)
 	}
-	metaPath := filepath.Join(c.dataDir, "events", ev.ID, "meta")
+	metaPath := filepath.Join(c.dataDir, ev.ID+"-meta")
 	if _, err := os.Stat(metaPath); err != nil {
 		t.Errorf("meta dir not created by CreateEvent: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestCreateEvent(t *testing.T) {
 func TestJoinEvent(t *testing.T) {
 	c := newTestClient(t)
 
-	ev, err := c.JoinEvent("some-invite-secret")
+	ev, err := c.JoinEvent("some-invite-secret", "evt-abc123")
 	if err != nil {
 		t.Fatalf("JoinEvent: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestJoinEvent(t *testing.T) {
 		t.Error("MetaFolderID should be set after JoinEvent")
 	}
 
-	photoPath := filepath.Join(c.dataDir, "events", ev.ID, "photos", c.deviceID)
+	photoPath := filepath.Join(c.dataDir, ev.ID+"-"+c.deviceID+"-photos")
 	if _, err := os.Stat(photoPath); err != nil {
 		t.Errorf("photo dir not created by JoinEvent: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestAddParticipantPhotoFolder(t *testing.T) {
 		t.Fatalf("addParticipantPhotoFolder: %v", err)
 	}
 
-	participantPath := filepath.Join(c.dataDir, "events", eventID, "photos", participantID)
+	participantPath := filepath.Join(c.dataDir, eventID+"-"+participantID+"-photos")
 	if _, err := os.Stat(participantPath); err != nil {
 		t.Errorf("participant photo dir not created: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestMetaWatcherDiscovery(t *testing.T) {
 
 	// Simulate a participant announcing themselves by dropping a devices/{id}.json file.
 	participantID := "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
-	devicesDir := filepath.Join(c.dataDir, "events", eventID, "meta", "devices")
+	devicesDir := filepath.Join(c.dataDir, eventID+"-meta", "devices")
 	if err := os.MkdirAll(devicesDir, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestMetaWatcherDiscovery(t *testing.T) {
 	}
 
 	// Poll until the watcher creates the participant photo folder (max 2s).
-	participantPath := filepath.Join(c.dataDir, "events", eventID, "photos", participantID)
+	participantPath := filepath.Join(c.dataDir, eventID+"-"+participantID+"-photos")
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(participantPath); err == nil {
@@ -193,7 +193,7 @@ func TestAnnounceDevice(t *testing.T) {
 	eventID := "announce-event"
 
 	// Create the meta folder first (AnnounceDevice creates devices/ sub-dir itself).
-	metaPath := filepath.Join(c.dataDir, "events", eventID, "meta")
+	metaPath := filepath.Join(c.dataDir, eventID+"-meta")
 	if err := os.MkdirAll(metaPath, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestAnnounceDevice(t *testing.T) {
 	}
 
 	// File must exist at devices/{deviceID}.json
-	annPath := filepath.Join(c.dataDir, "events", eventID, "meta", "devices", c.deviceID+".json")
+	annPath := filepath.Join(c.dataDir, eventID+"-meta", "devices", c.deviceID+".json")
 	raw, err := os.ReadFile(annPath)
 	if err != nil {
 		t.Fatalf("announcement file not created: %v", err)
@@ -244,7 +244,7 @@ func TestMetaWatcherIgnoresOwnDevice(t *testing.T) {
 	defer c.StopMetaWatcher(eventID)
 
 	// Write this device's own announcement file.
-	devicesDir := filepath.Join(c.dataDir, "events", eventID, "meta", "devices")
+	devicesDir := filepath.Join(c.dataDir, eventID+"-meta", "devices")
 	if err := os.MkdirAll(devicesDir, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestMetaWatcherIgnoresOwnDevice(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 
 	// The watcher must NOT create a ReceiveOnly folder for our own device ID.
-	ownPath := filepath.Join(c.dataDir, "events", eventID, "photos", c.deviceID)
+	ownPath := filepath.Join(c.dataDir, eventID+"-"+c.deviceID+"-photos")
 	// The SendOnly folder was created by createEventFolders; a second MkdirAll is idempotent,
 	// so instead verify the watcher only created it once (already exists from createEventFolders).
 	// What we really want to verify is that knownDevices stays empty for our own ID —
