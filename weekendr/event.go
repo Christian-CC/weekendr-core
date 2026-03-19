@@ -3,6 +3,7 @@ package weekendr
 import (
 	"crypto/rand"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,6 +130,41 @@ func (c *Client) GetEvent(eventID string) (*Event, error) {
 		Name:  "Stub Event",
 		State: "active",
 	}, nil
+}
+
+// BootstrapConnection connects a joining device to the event host by adding
+// the host as a Syncthing peer and sharing the meta and photo folders with it.
+// Errors are logged but not returned — bootstrapping is best-effort so that a
+// transient Syncthing issue does not block the join flow.
+func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
+	log.Printf("GoCore: BootstrapConnection called — eventID=%s hostDeviceID=%s", eventID, hostDeviceID)
+
+	if c.syncthing == nil {
+		log.Printf("GoCore: BootstrapConnection — syncthing is nil, skipping")
+		return nil
+	}
+
+	// 1. Add host as peer.
+	log.Printf("GoCore: BootstrapConnection — adding peer %s", hostDeviceID)
+	if err := c.syncthing.AddPeer(hostDeviceID); err != nil {
+		log.Printf("GoCore: BootstrapConnection AddPeer error: %v", err)
+	}
+
+	// 2. Share meta folder with host.
+	log.Printf("GoCore: BootstrapConnection — sharing meta folder")
+	if err := c.syncthing.ShareFolder("meta-"+eventID, hostDeviceID); err != nil {
+		log.Printf("GoCore: BootstrapConnection ShareFolder meta error: %v", err)
+	}
+
+	// 3. Share our photo folder with host.
+	log.Printf("GoCore: BootstrapConnection — sharing photo folder")
+	photoFolderID := "photos-" + eventID + "-" + strings.ToLower(c.deviceID)
+	if err := c.syncthing.ShareFolder(photoFolderID, hostDeviceID); err != nil {
+		log.Printf("GoCore: BootstrapConnection ShareFolder photos error: %v", err)
+	}
+
+	log.Printf("GoCore: BootstrapConnection — done")
+	return nil
 }
 
 // addParticipantPhotoFolder sets up everything needed to receive photos from a
