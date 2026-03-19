@@ -114,6 +114,25 @@ func TestCreateEvent(t *testing.T) {
 	}
 }
 
+func TestCreateEventWithServerID(t *testing.T) {
+	c := newTestClient(t)
+	serverID := "56ce46e35f43659cc368159a5462b5aa"
+
+	ev, err := c.CreateEvent(&CreateEventParams{EventID: serverID, Name: "Server Event", Mode: "live"})
+	if err != nil {
+		t.Fatalf("CreateEvent: %v", err)
+	}
+
+	if ev.ID != serverID {
+		t.Errorf("event ID: got %q, want %q", ev.ID, serverID)
+	}
+
+	photoPath := filepath.Join(c.dataDir, ev.ID+"-"+c.deviceID+"-photos")
+	if _, err := os.Stat(photoPath); err != nil {
+		t.Errorf("photo dir not created: %v", err)
+	}
+}
+
 func TestJoinEvent(t *testing.T) {
 	c := newTestClient(t)
 

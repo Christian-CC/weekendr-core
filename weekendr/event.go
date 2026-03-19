@@ -36,6 +36,7 @@ type Event struct {
 
 // CreateEventParams holds the parameters for creating a new event.
 type CreateEventParams struct {
+	EventID          string // server-assigned ID; if empty, one is generated locally
 	Name             string
 	Mode             string
 	StartsAt         int64
@@ -92,8 +93,12 @@ func createEventFolders(c *Client, event *Event) error {
 
 // CreateEvent creates a new event on the server and returns the event ID and invite secret.
 func (c *Client) CreateEvent(params *CreateEventParams) (*Event, error) {
+	eventID := params.EventID
+	if eventID == "" {
+		eventID = generateEventID()
+	}
 	event := &Event{
-		ID:    generateEventID(),
+		ID:    eventID,
 		Name:  params.Name,
 		Mode:  params.Mode,
 		State: "upcoming",

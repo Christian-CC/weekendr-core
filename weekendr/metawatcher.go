@@ -49,6 +49,7 @@ const watcherPollInterval = 100 * time.Millisecond
 //
 // Each device is processed at most once (tracked in knownDevices).
 func (c *Client) StartMetaWatcher(eventID string) error {
+	log.Printf("GoCore: StartMetaWatcher started for event %s", eventID)
 	if _, running := c.watchers[eventID]; running {
 		return nil
 	}
@@ -108,7 +109,8 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 						continue
 					}
 
-					if err := c.addParticipantPhotoFolder(eventID, deviceID); err != nil {
+					log.Printf("GoCore: MetaWatcher found new device %s", deviceID)
+				if err := c.addParticipantPhotoFolder(eventID, deviceID); err != nil {
 						log.Printf("metawatcher: addParticipantPhotoFolder(%s, %s): %v", eventID, deviceID, err)
 					}
 					knownDevices[deviceID] = true
@@ -142,6 +144,7 @@ type deviceAnnouncement struct {
 // so that MetaWatcher on peer devices can discover this device and set up
 // the Syncthing folders for P2P sync.
 func (c *Client) AnnounceDevice(eventID string) error {
+	log.Printf("GoCore: AnnounceDevice called for event %s", eventID)
 	devicesDir := filepath.Join(c.dataDir, eventID+"-meta", "devices")
 	if err := os.MkdirAll(devicesDir, 0700); err != nil {
 		return fmt.Errorf("creating devices dir: %w", err)
@@ -160,5 +163,6 @@ func (c *Client) AnnounceDevice(eventID string) error {
 	if err := os.WriteFile(annPath, data, 0600); err != nil {
 		return fmt.Errorf("writing device announcement: %w", err)
 	}
+	log.Printf("GoCore: AnnounceDevice wrote %s", annPath)
 	return nil
 }
