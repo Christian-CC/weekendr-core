@@ -15,6 +15,8 @@ import (
 // All state is held here and accessed via methods.
 type Client struct {
 	deviceID string
+	dataDir  string
+	watchers map[string]chan struct{}
 }
 
 const deviceIDFile = "device_id.json"
@@ -78,7 +80,7 @@ func NewClient(dataDir string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{deviceID: id}, nil
+	return &Client{deviceID: id, dataDir: dataDir, watchers: make(map[string]chan struct{})}, nil
 }
 
 // DeviceID returns this device's Syncthing device ID.
