@@ -26,9 +26,13 @@ jobs:
           go get golang.org/x/mobile/bind
           gomobile init
 
+      - name: Run tests
+        run: go test -tags noassets ./weekendr/...
+
       - name: Build xcframework
         run: |
           gomobile bind \
+            -tags noassets \
             -target ios \
             -o WeekendrCore.xcframework \
             ./weekendr/
