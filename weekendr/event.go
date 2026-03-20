@@ -99,7 +99,7 @@ func createEventFolders(c *Client, event *Event) error {
 	event.PhotoFolderID = "photos-" + eventIDLower + "-" + deviceIDLower
 	event.MetaFolderID = "meta-" + eventIDLower
 
-	photoPath := filepath.Join(c.dataDir, event.ID+"-"+c.deviceID+"-photos")
+	photoPath := filepath.Join(c.dataDir, eventIDLower+"-"+deviceIDLower+"-photos")
 	if err := os.MkdirAll(photoPath, 0700); err != nil {
 		return fmt.Errorf("creating photo folder: %w", err)
 	}
@@ -107,7 +107,7 @@ func createEventFolders(c *Client, event *Event) error {
 		return fmt.Errorf("creating photo .stfolder marker: %w", err)
 	}
 
-	metaPath := filepath.Join(c.dataDir, event.ID+"-meta")
+	metaPath := filepath.Join(c.dataDir, eventIDLower+"-meta")
 	if err := os.MkdirAll(metaPath, 0700); err != nil {
 		return fmt.Errorf("creating meta folder: %w", err)
 	}
@@ -194,7 +194,7 @@ func (c *Client) ensureFoldersRegistered(eventID string) error {
 
 	// Meta folder — sendreceive, shared by all participants.
 	metaFolderID := "meta-" + eventIDLower
-	metaPath := filepath.Join(c.dataDir, eventID+"-meta")
+	metaPath := filepath.Join(c.dataDir, eventIDLower+"-meta")
 	if err := os.MkdirAll(metaPath, 0700); err != nil {
 		return fmt.Errorf("creating meta folder: %w", err)
 	}
@@ -207,7 +207,7 @@ func (c *Client) ensureFoldersRegistered(eventID string) error {
 
 	// Own photo folder — sendonly, this device's uploads.
 	photoFolderID := "photos-" + eventIDLower + "-" + deviceIDLower
-	photoPath := filepath.Join(c.dataDir, eventID+"-"+c.deviceID+"-photos")
+	photoPath := filepath.Join(c.dataDir, eventIDLower+"-"+deviceIDLower+"-photos")
 	if err := os.MkdirAll(photoPath, 0700); err != nil {
 		return fmt.Errorf("creating photo folder: %w", err)
 	}
@@ -226,6 +226,7 @@ func (c *Client) ensureFoldersRegistered(eventID string) error {
 // Errors are logged but not returned — bootstrapping is best-effort so that a
 // transient Syncthing issue does not block the join flow.
 func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
+	log.Printf("GoCore: BootstrapConnection START — syncthing=%v deviceID=%s", c.syncthing != nil, c.deviceID)
 	log.Printf("GoCore: BootstrapConnection called — eventID=%s hostDeviceID=%s", eventID, hostDeviceID)
 
 	if c.syncthing == nil {
@@ -236,18 +237,39 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 	eventIDLower := strings.ToLower(eventID)
 
 	// 1. Add host as peer.
+	log.Printf("GoCore: AddPeer called with deviceID='%s' (len=%d)", hostDeviceID, len(hostDeviceID))
 	err := c.syncthing.AddPeer(hostDeviceID)
 	log.Printf("GoCore: AddPeer(%s) result: %v", hostDeviceID, err)
 
 	// 2. Share meta folder with host.
 	metaFolderID := "meta-" + eventIDLower
+	log.Printf("GoCore: ShareFolder called with folderID='%s' deviceID='%s'", metaFolderID, hostDeviceID)
 	err = c.syncthing.ShareFolder(metaFolderID, hostDeviceID)
 	log.Printf("GoCore: ShareFolder(%s, %s) result: %v", metaFolderID, hostDeviceID, err)
 
 	// 3. Share our photo folder with host.
 	photoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(c.deviceID)
+	log.Printf("GoCore: ShareFolder called with folderID='%s' deviceID='%s'", photoFolderID, hostDeviceID)
 	err = c.syncthing.ShareFolder(photoFolderID, hostDeviceID)
 	log.Printf("GoCore: ShareFolder(%s, %s) result: %v", photoFolderID, hostDeviceID, err)
+
+	// 4. Create a ReceiveOnly folder for the host's photos so we can pull them.
+	hostPhotoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(hostDeviceID)
+	hostPhotoPath := filepath.Join(c.dataDir, eventIDLower+"-"+strings.ToLower(hostDeviceID)+"-photos")
+	if err := os.MkdirAll(hostPhotoPath, 0700); err != nil {
+		log.Printf("GoCore: BootstrapConnection mkdir host photos error: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(hostPhotoPath, ".stfolder"), 0755); err != nil {
+		log.Printf("GoCore: BootstrapConnection mkdir host .stfolder error: %v", err)
+	}
+	log.Printf("GoCore: BootstrapConnection — about to AddFolder hostPhotoFolderID=%s hostPhotoPath=%s", hostPhotoFolderID, hostPhotoPath)
+	if err := c.syncthing.AddFolder(hostPhotoFolderID, hostPhotoPath, "receiveonly"); err != nil {
+		log.Printf("GoCore: BootstrapConnection AddFolder host photos error: %v", err)
+	}
+	if err := c.syncthing.ShareFolder(hostPhotoFolderID, hostDeviceID); err != nil {
+		log.Printf("GoCore: BootstrapConnection ShareFolder host photos error: %v", err)
+	}
+	log.Printf("GoCore: BootstrapConnection — created host photo folder %s at %s", hostPhotoFolderID, hostPhotoPath)
 
 	log.Printf("GoCore: BootstrapConnection — done")
 	return nil
@@ -273,7 +295,7 @@ func (c *Client) AddParticipant(eventID, participantDeviceID string) error {
 //  4. Shares our own SendOnly photo folder with the participant so they can
 //     pull our photos.
 func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) error {
-	participantPath := filepath.Join(c.dataDir, eventID+"-"+participantDeviceID+"-photos")
+	participantPath := filepath.Join(c.dataDir, strings.ToLower(eventID)+"-"+strings.ToLower(participantDeviceID)+"-photos")
 	if err := os.MkdirAll(participantPath, 0700); err != nil {
 		return fmt.Errorf("creating participant photo folder: %w", err)
 	}
@@ -297,6 +319,11 @@ func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) 
 	participantPhotoFolderID := "photos-" + eventIDLower + "-" + participantIDLower
 	if err := c.syncthing.AddFolder(participantPhotoFolderID, participantPath, "receiveonly"); err != nil {
 		return fmt.Errorf("registering participant photo folder with Syncthing: %w", err)
+	}
+
+	// 2b. Share the participant's photo folder WITH the participant so they send to it.
+	if err := c.syncthing.ShareFolder(participantPhotoFolderID, participantDeviceID); err != nil {
+		return fmt.Errorf("sharing participant photo folder with participant: %w", err)
 	}
 
 	// 3. Share the meta folder with the new participant for bidirectional metadata sync.

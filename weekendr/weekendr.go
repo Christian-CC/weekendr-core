@@ -79,7 +79,7 @@ func configureServers(s SyncthingClient) {
 	}
 	if sc, ok := s.(serverConfigurer); ok {
 		_ = sc.SetDiscoveryServers([]string{"https://discovery.getweekendr.app"})
-		_ = sc.SetRelayServers([]string{"relay://relay.getweekendr.app:22067"})
+		_ = sc.SetRelayServers([]string{"relay://relay.getweekendr.app:22067/?id=2ITVNHO-U3GGZSU-XXLLEUM-RMDH5M5-XSUSVXK-6ENQX6F-C5PA377-LPK62Q7"})
 	}
 }
 

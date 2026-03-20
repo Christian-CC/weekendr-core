@@ -25,15 +25,28 @@ func (a *sushitrainAdapter) AddFolder(folderID, folderPath, folderType string) e
 }
 
 func (a *sushitrainAdapter) AddPeer(deviceID string) error {
-	return a.st.AddPeer(deviceID)
+	log.Printf("GoCore: sushitrainAdapter.AddPeer('%s')", deviceID)
+	if err := a.st.AddPeer(deviceID); err != nil {
+		log.Printf("GoCore: AddPeer error: %v", err)
+		return err
+	}
+	log.Printf("GoCore: AddPeer succeeded for %s", deviceID)
+	return nil
 }
 
 func (a *sushitrainAdapter) ShareFolder(folderID, deviceID string) error {
+	log.Printf("GoCore: sushitrainAdapter.ShareFolder('%s', '%s')", folderID, deviceID)
 	folder := a.st.FolderWithID(folderID)
 	if folder == nil {
+		log.Printf("GoCore: ShareFolder error: folder not found: %s", folderID)
 		return fmt.Errorf("folder not found: %s", folderID)
 	}
-	return folder.ShareWithDevice(deviceID, true, "")
+	if err := folder.ShareWithDevice(deviceID, true, ""); err != nil {
+		log.Printf("GoCore: ShareFolder error: %v", err)
+		return err
+	}
+	log.Printf("GoCore: ShareFolder succeeded for folder=%s device=%s", folderID, deviceID)
+	return nil
 }
 
 // SetDiscoveryServers implements the serverConfigurer interface used by
@@ -46,6 +59,33 @@ func (a *sushitrainAdapter) SetDiscoveryServers(urls []string) error {
 // configureServers via type assertion.
 func (a *sushitrainAdapter) SetRelayServers(urls []string) error {
 	return a.st.SetRelayAddresses(sushitrain.List(urls))
+}
+
+// PendingFolderIDs returns all folder IDs that connected peers are offering
+// but we have not yet registered locally.
+func (a *sushitrainAdapter) PendingFolderIDs() ([]string, error) {
+	ids, err := a.st.PendingFolderIDs()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, ids.Count())
+	for i := 0; i < ids.Count(); i++ {
+		result[i] = ids.ItemAt(i)
+	}
+	return result, nil
+}
+
+// DevicesPendingFolder returns the device IDs that are offering a given folder.
+func (a *sushitrainAdapter) DevicesPendingFolder(folderID string) ([]string, error) {
+	devs, err := a.st.DevicesPendingFolder(folderID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, devs.Count())
+	for i := 0; i < devs.Count(); i++ {
+		result[i] = devs.ItemAt(i)
+	}
+	return result, nil
 }
 
 // expectedFolderPath derives the correct folder path from a folder ID and the
@@ -155,16 +195,33 @@ func (c *Client) StartSyncthing(dataDir string) error {
 	// Updates paths in-place so peer/share config is preserved.
 	migrateFolderPaths(st, dataDir)
 
+	// Force relay-only connections. Direct TCP/QUIC connections fail on iOS
+	// because the OS aggressively closes incoming TLS handshakes ("broken
+	// pipe"). By omitting tcp:// and quic:// listen addresses, all traffic
+	// goes through the private relay server. configureServers below appends
+	// the relay address to the listen list via SetRelayAddresses.
+	if err := st.SetListenAddresses(sushitrain.List([]string{})); err != nil {
+		return fmt.Errorf("setting listen addresses: %w", err)
+	}
+
 	// Configure private servers BEFORE Start() so Syncthing never
 	// attempts to connect to public relay/discovery pools.
 	adapter := &sushitrainAdapter{st: st}
 	configureServers(adapter)
 
-	// Disable the dynamic relay client entirely. Without this,
-	// Syncthing spawns dynamicClient.serve() which does HTTP lookups
-	// against public relay pools and crashes on iOS.
-	if err := st.SetRelaysEnabled(false); err != nil {
-		return fmt.Errorf("disabling dynamic relays: %w", err)
+	// Enable relays so Syncthing can fall back to our private relay
+	// (relay.getweekendr.app) when direct connections fail. Public
+	// relay pools are not contacted because configureServers above
+	// replaced the relay list with only our private server.
+	if err := st.SetRelaysEnabled(true); err != nil {
+		return fmt.Errorf("enabling relays: %w", err)
+	}
+
+	// Shorter reconnect interval (default 60s is too long for mobile).
+	// This makes Syncthing retry relay connections every 10s after a
+	// disconnect, improving recovery from iOS background suspensions.
+	if err := st.SetReconnectIntervalS(10); err != nil {
+		return fmt.Errorf("setting reconnect interval: %w", err)
 	}
 
 	if err := st.Start(); err != nil {
@@ -208,9 +265,17 @@ func (c *Client) StartSyncthing(dataDir string) error {
 		close(c.syncthingReady)
 	}
 
-	// Persistent connection monitor — logs peer and folder status every 15s.
+	// Accept pending folders after a delay to give peers time to connect via
+	// relay and announce their folders after Syncthing starts.
 	go func() {
-		ticker := time.NewTicker(15 * time.Second)
+		log.Printf("GoCore: acceptPendingFolders goroutine started, waiting 30s...")
+		time.Sleep(30 * time.Second)
+		c.acceptPendingFolders()
+	}()
+
+	// Persistent connection monitor — logs peer and folder status every 5s.
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			var connectedPeers []string
@@ -247,6 +312,10 @@ func (c *Client) StartSyncthing(dataDir string) error {
 				}
 			}
 			log.Printf("GoCore: [status] folder states: %v", folderStates)
+
+			// Auto-accept folders offered by peers since last check.
+			log.Printf("GoCore: [ticker] checking pending folders...")
+			c.acceptPendingFolders()
 		}
 	}()
 
@@ -315,4 +384,107 @@ func (c *Client) GetConnectionStatus(eventID string) string {
 
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// acceptPendingFolders checks for folders that connected peers are offering and
+// automatically accepts them. Photo folders (photos-{eventID}-{deviceID}) are
+// registered as ReceiveOnly; meta folders (meta-{eventID}) as SendReceive.
+// This handles the case where a remote device announces folders before we've
+// registered them (e.g. the host announces its photo folder to a joiner that
+// hasn't run BootstrapConnection yet, or ran it before Syncthing was ready).
+func (c *Client) acceptPendingFolders() {
+	adapter, ok := c.syncthing.(*sushitrainAdapter)
+	if !ok || adapter == nil {
+		return
+	}
+
+	pendingIDs, err := adapter.PendingFolderIDs()
+	if err != nil {
+		log.Printf("GoCore: acceptPendingFolders error: %v", err)
+		return
+	}
+	log.Printf("GoCore: acceptPendingFolders — found %d pending folders: %v", len(pendingIDs), pendingIDs)
+	if len(pendingIDs) == 0 {
+		log.Printf("GoCore: acceptPendingFolders — no pending folders")
+		return
+	}
+
+	// Build set of known event IDs.
+	knownEvents := make(map[string]bool)
+	if c.activeEventID != "" {
+		knownEvents[strings.ToLower(c.activeEventID)] = true
+	}
+	for _, eid := range loadPersistedEventIDs(c.dataDir) {
+		knownEvents[strings.ToLower(eid)] = true
+	}
+
+	for _, folderID := range pendingIDs {
+		var folderType string // "receiveonly" or "sendreceive"
+		var eventID string
+
+		switch {
+		case strings.HasPrefix(folderID, "photos-"):
+			// Parse photos-{eventID}-{deviceID}; device IDs are 63 chars.
+			rest := strings.TrimPrefix(folderID, "photos-")
+			if len(rest) <= 64 || rest[len(rest)-64] != '-' {
+				continue
+			}
+			eventID = rest[:len(rest)-64]
+			folderType = "receiveonly"
+
+		case strings.HasPrefix(folderID, "meta-"):
+			eventID = strings.TrimPrefix(folderID, "meta-")
+			folderType = "sendreceive"
+
+		default:
+			continue
+		}
+
+		if !knownEvents[eventID] {
+			continue
+		}
+
+		// Determine the local path for this folder.
+		folderPath := expectedFolderPath(folderID, c.dataDir)
+		if folderPath == "" {
+			continue
+		}
+		log.Printf("GoCore: acceptPendingFolders: folderID=%s → path=%s", folderID, folderPath)
+
+		// Find which devices are offering this folder.
+		devices, err := adapter.DevicesPendingFolder(folderID)
+		if err != nil {
+			log.Printf("GoCore: acceptPendingFolders: DevicesPendingFolder(%s): %v", folderID, err)
+			continue
+		}
+
+		log.Printf("GoCore: acceptPendingFolders: accepting %s as %s (offered by %v)", folderID, folderType, devices)
+
+		// Create OS directory and .stfolder marker.
+		if err := os.MkdirAll(folderPath, 0755); err != nil {
+			log.Printf("GoCore: acceptPendingFolders: mkdir FAILED %s: %v", folderPath, err)
+		} else {
+			log.Printf("GoCore: acceptPendingFolders: mkdir OK %s", folderPath)
+		}
+		if err := os.MkdirAll(folderPath+"/.stfolder", 0755); err != nil {
+			log.Printf("GoCore: acceptPendingFolders: .stfolder FAILED %s: %v", folderPath, err)
+		} else {
+			log.Printf("GoCore: acceptPendingFolders: .stfolder OK %s", folderPath)
+		}
+
+		// Register the folder with the appropriate type.
+		if err := c.syncthing.AddFolder(folderID, folderPath, folderType); err != nil {
+			log.Printf("GoCore: acceptPendingFolders: AddFolder(%s): %v", folderID, err)
+			continue
+		}
+
+		// Share the folder with each offering device so Syncthing syncs.
+		for _, devID := range devices {
+			log.Printf("GoCore: acceptPendingFolders — accepting folder %s from device %s",
+				folderID, devID)
+			if err := c.syncthing.ShareFolder(folderID, devID); err != nil {
+				log.Printf("GoCore: acceptPendingFolders: ShareFolder(%s, %s): %v", folderID, devID, err)
+			}
+		}
+	}
 }
