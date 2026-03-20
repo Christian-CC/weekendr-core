@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var syncthingIDRe = regexp.MustCompile(`^([A-Z2-7]{7}-){7}[A-Z2-7]{7}$`)
@@ -284,4 +287,101 @@ func TestMetaWatcherIgnoresOwnDevice(t *testing.T) {
 	if _, err := os.Stat(ownPath); err != nil {
 		t.Errorf("own photo dir unexpectedly missing: %v", err)
 	}
+}
+
+// mockSyncthing records all calls for test assertions.
+type mockSyncthing struct {
+	addedPeers    []string
+	addedFolders  []struct{ folderID, path, folderType string }
+	sharedFolders []struct{ folderID, deviceID string }
+}
+
+func (m *mockSyncthing) AddFolder(folderID, folderPath, folderType string) error {
+	m.addedFolders = append(m.addedFolders, struct{ folderID, path, folderType string }{folderID, folderPath, folderType})
+	return nil
+}
+
+func (m *mockSyncthing) AddPeer(deviceID string) error {
+	m.addedPeers = append(m.addedPeers, deviceID)
+	return nil
+}
+
+func (m *mockSyncthing) ShareFolder(folderID, deviceID string) error {
+	m.sharedFolders = append(m.sharedFolders, struct{ folderID, deviceID string }{folderID, deviceID})
+	return nil
+}
+
+func TestP2PBootstrap(t *testing.T) {
+	c := newTestClient(t)
+	mock := &mockSyncthing{}
+	c.SetSyncthing(mock)
+
+	eventID := "test-evt-001"
+	hostDeviceID := "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
+
+	// Create event folders so BootstrapConnection has folders to share.
+	ev := &Event{ID: eventID, Name: "Test"}
+	require.NoError(t, createEventFolders(c, ev))
+
+	// Bootstrap connection to the host.
+	require.NoError(t, c.BootstrapConnection(eventID, hostDeviceID))
+
+	// Verify AddPeer was called with the host device ID.
+	assert.Contains(t, mock.addedPeers, hostDeviceID, "AddPeer should be called with host device ID")
+
+	// Verify meta folder is shared with host.
+	expectedMeta := struct{ folderID, deviceID string }{"meta-" + eventID, hostDeviceID}
+	assert.Contains(t, mock.sharedFolders, expectedMeta, "meta folder should be shared with host")
+
+	// Verify photo folder is shared with host.
+	expectedPhoto := struct{ folderID, deviceID string }{
+		"photos-" + eventID + "-" + strings.ToLower(c.DeviceID()),
+		hostDeviceID,
+	}
+	assert.Contains(t, mock.sharedFolders, expectedPhoto, "photo folder should be shared with host")
+}
+
+func TestMetaWatcherTriggersBootstrap(t *testing.T) {
+	c := newTestClient(t)
+	mock := &mockSyncthing{}
+	c.SetSyncthing(mock)
+
+	eventID := "watcher-bootstrap"
+	participantID := "ZZZZZZZ-YYYYYYY-XXXXXXX-WWWWWWW-VVVVVVV-UUUUUUU-TTTTTTT-SSSSSSS"
+
+	// Create event folders so the meta directory exists.
+	ev := &Event{ID: eventID, Name: "Watcher Bootstrap"}
+	require.NoError(t, createEventFolders(c, ev))
+
+	// Write a device announcement file simulating a participant.
+	devicesDir := filepath.Join(c.dataDir, eventID+"-meta", "devices")
+	require.NoError(t, os.MkdirAll(devicesDir, 0700))
+	ann := fmt.Sprintf(`{"device_id":"%s","announced_at":"2025-01-01T00:00:00Z"}`, participantID)
+	require.NoError(t, os.WriteFile(filepath.Join(devicesDir, participantID+".json"), []byte(ann), 0600))
+
+	// Start MetaWatcher — it should discover the participant.
+	require.NoError(t, c.StartMetaWatcher(eventID))
+	defer c.StopMetaWatcher(eventID)
+
+	// Wait for the watcher to pick up the device file.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(mock.addedPeers) > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Verify AddPeer was called with the participant's device ID.
+	assert.Contains(t, mock.addedPeers, participantID, "MetaWatcher should AddPeer for discovered device")
+
+	// Verify the participant's photo folder was shared.
+	foundShare := false
+	for _, s := range mock.sharedFolders {
+		if s.deviceID == participantID && strings.HasPrefix(s.folderID, "meta-") {
+			foundShare = true
+			break
+		}
+	}
+	assert.True(t, foundShare, "MetaWatcher should share meta folder with discovered device")
 }
