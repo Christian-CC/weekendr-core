@@ -61,6 +61,7 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 
 	go func() {
 		knownDevices := map[string]bool{}
+		var scanLogCounter int
 
 		ticker := time.NewTicker(watcherPollInterval)
 		defer ticker.Stop()
@@ -70,10 +71,21 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 			case <-stop:
 				return
 			case <-ticker.C:
+				scanLogCounter++
 				entries, err := os.ReadDir(devicesDir)
 				if err != nil {
 					// Directory may not exist yet; keep polling.
 					continue
+				}
+
+				// Log scan status every ~30 seconds (300 ticks at 100ms).
+				if scanLogCounter%300 == 0 {
+					log.Printf("GoCore: MetaWatcher scanning — found %d device files", len(entries))
+					for _, e := range entries {
+						if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+							log.Printf("GoCore: MetaWatcher — device file: %s", e.Name())
+						}
+					}
 				}
 
 				for _, entry := range entries {

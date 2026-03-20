@@ -171,17 +171,24 @@ func (c *Client) StartSyncthing(dataDir string) error {
 		return fmt.Errorf("sushitrain Start: %w", err)
 	}
 
+	log.Printf("GoCore: Sushitrain started — device ID: %s", st.DeviceID())
+
 	c.syncthing = adapter
 
-	// Diagnostic: log connection status every 10s for the first 2 minutes.
+	// Signal that Syncthing is ready for use.
+	select {
+	case <-c.syncthingReady:
+		// already closed
+	default:
+		close(c.syncthingReady)
+	}
+
+	// Persistent connection monitor — logs peer and folder status every 15s.
 	go func() {
-		for i := 0; i < 12; i++ {
-			time.Sleep(10 * time.Second)
-
-			log.Printf("=== Weekendr Syncthing Status [%d/12] ===", i+1)
-			log.Printf("  Our Device ID: %s", st.DeviceID())
-			log.Printf("  Connected peers: %d", st.ConnectedPeerCount())
-
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			var connectedPeers []string
 			peers := st.Peers()
 			if peers != nil {
 				for j := 0; j < peers.Count(); j++ {
@@ -190,12 +197,14 @@ func (c *Client) StartSyncthing(dataDir string) error {
 						continue
 					}
 					peer := st.PeerWithID(peerID)
-					if peer != nil {
-						log.Printf("  Peer %s connected=%v", peerID, peer.IsConnected())
+					if peer != nil && peer.IsConnected() {
+						connectedPeers = append(connectedPeers, peerID)
 					}
 				}
 			}
+			log.Printf("GoCore: [status] connected peers: %v", connectedPeers)
 
+			var folderStates []string
 			folders := st.Folders()
 			if folders != nil {
 				for j := 0; j < folders.Count(); j++ {
@@ -206,16 +215,14 @@ func (c *Client) StartSyncthing(dataDir string) error {
 					}
 					state, err := folder.State()
 					if err != nil {
-						log.Printf("  Folder %s state=error: %v", folderID, err)
+						folderStates = append(folderStates, fmt.Sprintf("%s=error:%v", folderID, err))
 					} else {
-						log.Printf("  Folder %s state=%s", folderID, state)
+						folderStates = append(folderStates, fmt.Sprintf("%s=%s", folderID, state))
 					}
 				}
 			}
-
-			log.Printf("========================================")
+			log.Printf("GoCore: [status] folder states: %v", folderStates)
 		}
-		log.Printf("Weekendr: diagnostic polling complete")
 	}()
 
 	return nil

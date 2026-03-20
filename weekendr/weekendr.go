@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // SyncthingClient is the subset of the Syncthing API required by Weekendr.
@@ -41,10 +42,11 @@ type SyncthingClient interface {
 // Client is the main entry point for the Weekendr Go core.
 // All state is held here and accessed via methods.
 type Client struct {
-	deviceID  string
-	dataDir   string
-	watchers  map[string]chan struct{}
-	syncthing SyncthingClient // nil until SetSyncthing is called
+	deviceID       string
+	dataDir        string
+	watchers       map[string]chan struct{}
+	syncthing      SyncthingClient // nil until SetSyncthing is called
+	syncthingReady chan struct{}
 }
 
 const deviceIDFile = "device_id.json"
@@ -108,7 +110,13 @@ func NewClient(dataDir string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{deviceID: id, dataDir: dataDir, watchers: make(map[string]chan struct{})}, nil
+	c := &Client{
+		deviceID:       id,
+		dataDir:        dataDir,
+		watchers:       make(map[string]chan struct{}),
+		syncthingReady: make(chan struct{}),
+	}
+	return c, nil
 }
 
 // SetSyncthing wires a live Syncthing back-end into the client and immediately
@@ -132,6 +140,17 @@ func configureServers(s SyncthingClient) {
 	if sc, ok := s.(serverConfigurer); ok {
 		_ = sc.SetDiscoveryServers([]string{"https://discovery.getweekendr.app"})
 		_ = sc.SetRelayServers([]string{"relay://relay.getweekendr.app:22067"})
+	}
+}
+
+// WaitForSyncthing blocks until Syncthing is ready or the timeout expires.
+// Returns true if Syncthing is ready, false on timeout.
+func (c *Client) WaitForSyncthing(timeoutSeconds int) bool {
+	select {
+	case <-c.syncthingReady:
+		return true
+	case <-time.After(time.Duration(timeoutSeconds) * time.Second):
+		return false
 	}
 }
 

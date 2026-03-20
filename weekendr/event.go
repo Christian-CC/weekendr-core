@@ -144,24 +144,21 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 		return nil
 	}
 
+	eventIDLower := strings.ToLower(eventID)
+
 	// 1. Add host as peer.
-	log.Printf("GoCore: BootstrapConnection — adding peer %s", hostDeviceID)
-	if err := c.syncthing.AddPeer(hostDeviceID); err != nil {
-		log.Printf("GoCore: BootstrapConnection AddPeer error: %v", err)
-	}
+	err := c.syncthing.AddPeer(hostDeviceID)
+	log.Printf("GoCore: AddPeer(%s) result: %v", hostDeviceID, err)
 
 	// 2. Share meta folder with host.
-	log.Printf("GoCore: BootstrapConnection — sharing meta folder")
-	if err := c.syncthing.ShareFolder("meta-"+eventID, hostDeviceID); err != nil {
-		log.Printf("GoCore: BootstrapConnection ShareFolder meta error: %v", err)
-	}
+	metaFolderID := "meta-" + eventIDLower
+	err = c.syncthing.ShareFolder(metaFolderID, hostDeviceID)
+	log.Printf("GoCore: ShareFolder(%s, %s) result: %v", metaFolderID, hostDeviceID, err)
 
 	// 3. Share our photo folder with host.
-	log.Printf("GoCore: BootstrapConnection — sharing photo folder")
-	photoFolderID := "photos-" + eventID + "-" + strings.ToLower(c.deviceID)
-	if err := c.syncthing.ShareFolder(photoFolderID, hostDeviceID); err != nil {
-		log.Printf("GoCore: BootstrapConnection ShareFolder photos error: %v", err)
-	}
+	photoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(c.deviceID)
+	err = c.syncthing.ShareFolder(photoFolderID, hostDeviceID)
+	log.Printf("GoCore: ShareFolder(%s, %s) result: %v", photoFolderID, hostDeviceID, err)
 
 	log.Printf("GoCore: BootstrapConnection — done")
 	return nil
