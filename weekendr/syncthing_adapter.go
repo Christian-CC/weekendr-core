@@ -171,9 +171,34 @@ func (c *Client) StartSyncthing(dataDir string) error {
 		return fmt.Errorf("sushitrain Start: %w", err)
 	}
 
-	log.Printf("GoCore: Sushitrain started — device ID: %s", st.DeviceID())
+	// Read the real device ID from Sushitrain's TLS certificate.
+	// This is the authoritative identity — the cert persists across launches
+	// at {dataDir}/syncthing/config/cert.pem.
+	c.deviceID = st.DeviceID()
+	log.Printf("GoCore: Sushitrain started — device ID: %s", c.deviceID)
 
 	c.syncthing = adapter
+
+	// Now that c.deviceID and c.syncthing are set, register event folders
+	// with correct IDs. createEventFolders ran before StartSyncthing so it
+	// could only create OS directories — folder IDs had an empty device ID.
+	// On app restart c.activeEventID is empty, so we also load persisted
+	// event IDs from disk to re-register all previously joined events.
+	registered := map[string]bool{}
+	if c.activeEventID != "" {
+		if err := c.ensureFoldersRegistered(c.activeEventID); err != nil {
+			return fmt.Errorf("registering event folders after Syncthing start: %w", err)
+		}
+		registered[c.activeEventID] = true
+	}
+	for _, eventID := range loadPersistedEventIDs(c.dataDir) {
+		if registered[eventID] {
+			continue
+		}
+		if err := c.ensureFoldersRegistered(eventID); err != nil {
+			log.Printf("GoCore: ensureFoldersRegistered(%s): %v", eventID, err)
+		}
+	}
 
 	// Signal that Syncthing is ready for use.
 	select {

@@ -2,6 +2,7 @@ package weekendr
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -44,6 +45,45 @@ type CreateEventParams struct {
 	EndsAt           int64
 	LocationWeather  bool
 	CollectionWindow int64
+}
+
+// eventsFile is the JSON file that persists active event IDs across app restarts.
+type eventsFile struct {
+	EventIDs []string `json:"event_ids"`
+}
+
+// persistEventID appends eventID to {dataDir}/events.json, deduplicating.
+func persistEventID(dataDir, eventID string) error {
+	ids := loadPersistedEventIDs(dataDir)
+	for _, id := range ids {
+		if id == eventID {
+			return nil // already persisted
+		}
+	}
+	ids = append(ids, eventID)
+	data, err := json.Marshal(eventsFile{EventIDs: ids})
+	if err != nil {
+		return fmt.Errorf("marshalling events.json: %w", err)
+	}
+	path := filepath.Join(dataDir, "events.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("writing events.json: %w", err)
+	}
+	return nil
+}
+
+// loadPersistedEventIDs returns all event IDs from {dataDir}/events.json.
+// Returns nil if the file does not exist or cannot be parsed.
+func loadPersistedEventIDs(dataDir string) []string {
+	data, err := os.ReadFile(filepath.Join(dataDir, "events.json"))
+	if err != nil {
+		return nil
+	}
+	var f eventsFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return nil
+	}
+	return f.EventIDs
 }
 
 // createEventFolders creates the Syncthing folders for an event on this device:
@@ -107,6 +147,10 @@ func (c *Client) CreateEvent(params *CreateEventParams) (*Event, error) {
 	if err := createEventFolders(c, event); err != nil {
 		return nil, err
 	}
+	c.activeEventID = eventID
+	if err := persistEventID(c.dataDir, eventID); err != nil {
+		log.Printf("GoCore: failed to persist event ID: %v", err)
+	}
 	return event, nil
 }
 
@@ -120,6 +164,10 @@ func (c *Client) JoinEvent(inviteSecret string, eventID string) (*Event, error) 
 	if err := createEventFolders(c, event); err != nil {
 		return nil, err
 	}
+	c.activeEventID = eventID
+	if err := persistEventID(c.dataDir, eventID); err != nil {
+		log.Printf("GoCore: failed to persist event ID: %v", err)
+	}
 	return event, nil
 }
 
@@ -130,6 +178,47 @@ func (c *Client) GetEvent(eventID string) (*Event, error) {
 		Name:  "Stub Event",
 		State: "active",
 	}, nil
+}
+
+// ensureFoldersRegistered (re-)registers the meta and own photo folders with
+// Syncthing using the correct IDs derived from c.deviceID. This must be called
+// AFTER StartSyncthing sets c.deviceID, because createEventFolders runs before
+// Syncthing is started and therefore constructs folder IDs with an empty device ID.
+func (c *Client) ensureFoldersRegistered(eventID string) error {
+	if c.syncthing == nil {
+		return nil
+	}
+
+	eventIDLower := strings.ToLower(eventID)
+	deviceIDLower := strings.ToLower(c.deviceID)
+
+	// Meta folder — sendreceive, shared by all participants.
+	metaFolderID := "meta-" + eventIDLower
+	metaPath := filepath.Join(c.dataDir, eventID+"-meta")
+	if err := os.MkdirAll(metaPath, 0700); err != nil {
+		return fmt.Errorf("creating meta folder: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(metaPath, ".stfolder"), 0755); err != nil {
+		return fmt.Errorf("creating meta .stfolder marker: %w", err)
+	}
+	if err := c.syncthing.AddFolder(metaFolderID, metaPath, "sendreceive"); err != nil {
+		return fmt.Errorf("registering meta folder with Syncthing: %w", err)
+	}
+
+	// Own photo folder — sendonly, this device's uploads.
+	photoFolderID := "photos-" + eventIDLower + "-" + deviceIDLower
+	photoPath := filepath.Join(c.dataDir, eventID+"-"+c.deviceID+"-photos")
+	if err := os.MkdirAll(photoPath, 0700); err != nil {
+		return fmt.Errorf("creating photo folder: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(photoPath, ".stfolder"), 0755); err != nil {
+		return fmt.Errorf("creating photo .stfolder marker: %w", err)
+	}
+	if err := c.syncthing.AddFolder(photoFolderID, photoPath, "sendonly"); err != nil {
+		return fmt.Errorf("registering photo folder with Syncthing: %w", err)
+	}
+
+	return nil
 }
 
 // BootstrapConnection connects a joining device to the event host by adding
@@ -162,6 +251,13 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 
 	log.Printf("GoCore: BootstrapConnection — done")
 	return nil
+}
+
+// AddParticipant is the exported entry point for adding a newly discovered
+// participant. It delegates to addParticipantPhotoFolder which creates the OS
+// directory and (when c.syncthing != nil) registers Syncthing folders/peers.
+func (c *Client) AddParticipant(eventID, participantDeviceID string) error {
+	return c.addParticipantPhotoFolder(eventID, participantDeviceID)
 }
 
 // addParticipantPhotoFolder sets up everything needed to receive photos from a

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -14,41 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var syncthingIDRe = regexp.MustCompile(`^([A-Z2-7]{7}-){7}[A-Z2-7]{7}$`)
-
-func TestLoadOrCreateDeviceID(t *testing.T) {
-	dir := t.TempDir()
-
-	// (1) First call: ID is created and persisted.
-	id1, err := loadOrCreateDeviceID(dir)
-	if err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	if id1 == "" {
-		t.Fatal("first call returned empty ID")
-	}
-	if _, err := os.Stat(dir + "/device_id.json"); err != nil {
-		t.Fatalf("device_id.json not created: %v", err)
-	}
-
-	// (2) Second call with same dataDir returns the same ID.
-	id2, err := loadOrCreateDeviceID(dir)
-	if err != nil {
-		t.Fatalf("second call: %v", err)
-	}
-	if id1 != id2 {
-		t.Fatalf("ID changed between calls: %q → %q", id1, id2)
-	}
-
-	// (3) ID matches Syncthing format: 8 groups of 7 chars separated by hyphens = 63 chars total.
-	if len(id1) != 63 {
-		t.Fatalf("ID length: want 63 (8×7 chars + 7 hyphens), got %d: %q", len(id1), id1)
-	}
-	if !syncthingIDRe.MatchString(id1) {
-		t.Fatalf("ID does not match Syncthing format: %q", id1)
-	}
-}
-
 func newTestClient(t *testing.T) *Client {
 	t.Helper()
 	dir := t.TempDir()
@@ -56,6 +20,8 @@ func newTestClient(t *testing.T) *Client {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
+	// In tests Sushitrain isn't running, so set a fake device ID.
+	c.deviceID = "TESTDID-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG"
 	return c
 }
 
@@ -384,4 +350,98 @@ func TestMetaWatcherTriggersBootstrap(t *testing.T) {
 		}
 	}
 	assert.True(t, foundShare, "MetaWatcher should share meta folder with discovered device")
+}
+
+func TestEnsureFoldersRegistered(t *testing.T) {
+	c := newTestClient(t)
+	mock := &mockSyncthing{}
+	c.syncthing = mock
+
+	eventID := "ensure-evt-001"
+
+	// Simulate the production flow: createEventFolders ran with empty deviceID,
+	// then StartSyncthing set the real deviceID. ensureFoldersRegistered should
+	// register both folders with correct IDs.
+	require.NoError(t, c.ensureFoldersRegistered(eventID))
+
+	// Verify meta folder registered as sendreceive.
+	foundMeta := false
+	for _, f := range mock.addedFolders {
+		if f.folderID == "meta-"+eventID && f.folderType == "sendreceive" {
+			foundMeta = true
+			break
+		}
+	}
+	assert.True(t, foundMeta, "ensureFoldersRegistered should register meta folder")
+
+	// Verify photo folder registered as sendonly with correct device ID in the folder ID.
+	expectedPhotoID := "photos-" + eventID + "-" + strings.ToLower(c.deviceID)
+	foundPhoto := false
+	for _, f := range mock.addedFolders {
+		if f.folderID == expectedPhotoID && f.folderType == "sendonly" {
+			foundPhoto = true
+			break
+		}
+	}
+	assert.True(t, foundPhoto, "ensureFoldersRegistered should register photo folder with correct device ID")
+
+	// Verify directories were created.
+	metaPath := filepath.Join(c.dataDir, eventID+"-meta")
+	assert.DirExists(t, metaPath)
+	assert.DirExists(t, filepath.Join(metaPath, ".stfolder"))
+
+	photoPath := filepath.Join(c.dataDir, eventID+"-"+c.deviceID+"-photos")
+	assert.DirExists(t, photoPath)
+	assert.DirExists(t, filepath.Join(photoPath, ".stfolder"))
+}
+
+func TestActiveEventIDSetByCreateAndJoin(t *testing.T) {
+	c := newTestClient(t)
+
+	ev, err := c.CreateEvent(&CreateEventParams{EventID: "create-evt", Name: "Test", Mode: "live"})
+	require.NoError(t, err)
+	assert.Equal(t, ev.ID, c.activeEventID, "CreateEvent should set activeEventID")
+
+	_, err = c.JoinEvent("secret", "join-evt")
+	require.NoError(t, err)
+	assert.Equal(t, "join-evt", c.activeEventID, "JoinEvent should set activeEventID")
+}
+
+func TestPersistAndLoadEventIDs(t *testing.T) {
+	dir := t.TempDir()
+
+	// Empty dir returns nil.
+	assert.Nil(t, loadPersistedEventIDs(dir))
+
+	// Persist first event.
+	require.NoError(t, persistEventID(dir, "evt-aaa"))
+	assert.Equal(t, []string{"evt-aaa"}, loadPersistedEventIDs(dir))
+
+	// Persist second event.
+	require.NoError(t, persistEventID(dir, "evt-bbb"))
+	assert.Equal(t, []string{"evt-aaa", "evt-bbb"}, loadPersistedEventIDs(dir))
+
+	// Duplicate is ignored.
+	require.NoError(t, persistEventID(dir, "evt-aaa"))
+	assert.Equal(t, []string{"evt-aaa", "evt-bbb"}, loadPersistedEventIDs(dir))
+}
+
+func TestCreateEventPersistsID(t *testing.T) {
+	c := newTestClient(t)
+
+	ev, err := c.CreateEvent(&CreateEventParams{EventID: "persist-create", Name: "Test", Mode: "live"})
+	require.NoError(t, err)
+
+	ids := loadPersistedEventIDs(c.dataDir)
+	assert.Contains(t, ids, ev.ID, "CreateEvent should persist the event ID to disk")
+}
+
+func TestJoinEventPersistsID(t *testing.T) {
+	c := newTestClient(t)
+
+	_, err := c.JoinEvent("secret", "persist-join")
+	require.NoError(t, err)
+
+	ids := loadPersistedEventIDs(c.dataDir)
+	assert.Contains(t, ids, "persist-join", "JoinEvent should persist the event ID to disk")
 }
