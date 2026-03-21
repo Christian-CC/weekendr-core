@@ -99,16 +99,18 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 					// Primary source: deviceID is encoded in the filename.
 					deviceID := strings.TrimSuffix(name, ".json")
 
-					// Also read the JSON written by AnnounceDevice to validate
-					// and to obtain any extra fields (e.g. future shared secrets).
-					// If the JSON is absent or malformed we fall back silently.
+					// Read the JSON written by AnnounceDevice to validate
+					// and extract the participant name.
+					var announceName string
 					jsonPath := filepath.Join(devicesDir, name)
 					if raw, readErr := os.ReadFile(jsonPath); readErr == nil {
 						var ann deviceAnnouncement
-						if jsonErr := json.Unmarshal(raw, &ann); jsonErr == nil &&
-							ann.DeviceID != "" && ann.DeviceID != deviceID {
-							log.Printf("metawatcher: %s: JSON device_id %q != filename %q, using filename",
-								name, ann.DeviceID, deviceID)
+						if jsonErr := json.Unmarshal(raw, &ann); jsonErr == nil {
+							announceName = ann.Name
+							if ann.DeviceID != "" && ann.DeviceID != deviceID {
+								log.Printf("metawatcher: %s: JSON device_id %q != filename %q, using filename",
+									name, ann.DeviceID, deviceID)
+							}
 						}
 					}
 
@@ -121,8 +123,8 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 						continue
 					}
 
-					log.Printf("GoCore: MetaWatcher found new device %s", deviceID)
-				if err := c.addParticipantPhotoFolder(eventID, deviceID); err != nil {
+					log.Printf("GoCore: MetaWatcher found new device %s (name: %s)", deviceID, announceName)
+					if err := c.addParticipantPhotoFolder(eventID, deviceID); err != nil {
 						log.Printf("metawatcher: addParticipantPhotoFolder(%s, %s): %v", eventID, deviceID, err)
 					}
 					knownDevices[deviceID] = true
@@ -146,6 +148,7 @@ func (c *Client) StopMetaWatcher(eventID string) error {
 // deviceAnnouncement is the JSON written by AnnounceDevice and read by MetaWatcher.
 type deviceAnnouncement struct {
 	DeviceID    string `json:"device_id"`
+	Name        string `json:"name"`
 	AnnouncedAt string `json:"announced_at"`
 }
 
@@ -155,8 +158,8 @@ type deviceAnnouncement struct {
 //
 // so that MetaWatcher on peer devices can discover this device and set up
 // the Syncthing folders for P2P sync.
-func (c *Client) AnnounceDevice(eventID string) error {
-	log.Printf("GoCore: AnnounceDevice called for event %s", eventID)
+func (c *Client) AnnounceDevice(eventID string, name string) error {
+	log.Printf("GoCore: AnnounceDevice called for event %s (name: %s)", eventID, name)
 	devicesDir := filepath.Join(c.dataDir, "meta-"+eventID, "devices")
 	if err := os.MkdirAll(devicesDir, 0700); err != nil {
 		return fmt.Errorf("creating devices dir: %w", err)
@@ -164,6 +167,7 @@ func (c *Client) AnnounceDevice(eventID string) error {
 
 	ann := deviceAnnouncement{
 		DeviceID:    c.deviceID,
+		Name:        name,
 		AnnouncedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	data, err := json.Marshal(ann)

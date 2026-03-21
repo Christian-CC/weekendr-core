@@ -177,7 +177,7 @@ func TestAnnounceDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := c.AnnounceDevice(eventID); err != nil {
+	if err := c.AnnounceDevice(eventID, "Test User"); err != nil {
 		t.Fatalf("AnnounceDevice: %v", err)
 	}
 
@@ -190,6 +190,7 @@ func TestAnnounceDevice(t *testing.T) {
 
 	var ann struct {
 		DeviceID    string `json:"device_id"`
+		Name        string `json:"name"`
 		AnnouncedAt string `json:"announced_at"`
 	}
 	if err := json.Unmarshal(raw, &ann); err != nil {
@@ -197,6 +198,9 @@ func TestAnnounceDevice(t *testing.T) {
 	}
 	if ann.DeviceID != c.deviceID {
 		t.Errorf("device_id: got %q, want %q", ann.DeviceID, c.deviceID)
+	}
+	if ann.Name != "Test User" {
+		t.Errorf("name: got %q, want %q", ann.Name, "Test User")
 	}
 	if ann.AnnouncedAt == "" {
 		t.Error("announced_at must not be empty")
