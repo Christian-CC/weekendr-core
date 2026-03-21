@@ -61,6 +61,22 @@ func (a *sushitrainAdapter) SetRelayServers(urls []string) error {
 	return a.st.SetRelayAddresses(sushitrain.List(urls))
 }
 
+func (a *sushitrainAdapter) RescanFolder(folderID string) error {
+	folder := a.st.FolderWithID(folderID)
+	if folder == nil {
+		return fmt.Errorf("folder not found: %s", folderID)
+	}
+	return folder.Rescan()
+}
+
+func (a *sushitrainAdapter) SetFolderRescanInterval(folderID string, seconds int) error {
+	folder := a.st.FolderWithID(folderID)
+	if folder == nil {
+		return fmt.Errorf("folder not found: %s", folderID)
+	}
+	return folder.SetRescanInterval(seconds)
+}
+
 // PendingFolderIDs returns all folder IDs that connected peers are offering
 // but we have not yet registered locally.
 func (a *sushitrainAdapter) PendingFolderIDs() ([]string, error) {

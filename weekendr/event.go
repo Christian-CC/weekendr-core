@@ -193,6 +193,11 @@ func (c *Client) ensureFoldersRegistered(eventID string) error {
 		return fmt.Errorf("registering photo folder with Syncthing: %w", err)
 	}
 
+	// Faster rescan for photo folders so new files are picked up quickly.
+	if err := c.syncthing.SetFolderRescanInterval(photoFolderID, 30); err != nil {
+		log.Printf("GoCore: SetFolderRescanInterval(%s, 30): %v", photoFolderID, err)
+	}
+
 	return nil
 }
 

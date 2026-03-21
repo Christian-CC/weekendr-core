@@ -32,6 +32,13 @@ type SyncthingClient interface {
 
 	// ShareFolder shares an already-registered folder with a remote device.
 	ShareFolder(folderID, deviceID string) error
+
+	// RescanFolder triggers an immediate rescan of a folder so that
+	// newly written files are picked up without waiting for the periodic interval.
+	RescanFolder(folderID string) error
+
+	// SetFolderRescanInterval sets the periodic rescan interval for a folder.
+	SetFolderRescanInterval(folderID string, seconds int) error
 }
 
 // Client is the main entry point for the Weekendr Go core.
@@ -97,4 +104,14 @@ func (c *Client) WaitForSyncthing(timeoutSeconds int) bool {
 // DeviceID returns this device's Syncthing device ID.
 func (c *Client) DeviceID() string {
 	return c.deviceID
+}
+
+// RescanFolder triggers an immediate rescan of the given folder so that
+// newly written files are picked up by Syncthing without waiting for the
+// periodic interval.
+func (c *Client) RescanFolder(folderID string) error {
+	if c.syncthing == nil {
+		return nil
+	}
+	return c.syncthing.RescanFolder(folderID)
 }

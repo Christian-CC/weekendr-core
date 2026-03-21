@@ -264,6 +264,14 @@ func (m *mockSyncthing) ShareFolder(folderID, deviceID string) error {
 	return nil
 }
 
+func (m *mockSyncthing) RescanFolder(folderID string) error {
+	return nil
+}
+
+func (m *mockSyncthing) SetFolderRescanInterval(folderID string, seconds int) error {
+	return nil
+}
+
 func TestP2PBootstrap(t *testing.T) {
 	c := newTestClient(t)
 	mock := &mockSyncthing{}
