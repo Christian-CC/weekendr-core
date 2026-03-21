@@ -86,47 +86,22 @@ func loadPersistedEventIDs(dataDir string) []string {
 	return f.EventIDs
 }
 
-// createEventFolders creates the Syncthing folders for an event on this device:
-//   - A SendOnly photo folder for this device's own uploads
-//   - A SendReceive meta folder shared by all participants
-//
-// It first creates the OS directories, then (when c.syncthing != nil) registers
-// both folders with Syncthing so that P2P sync can take place.
+// createEventFolders creates the meta folder for an event on this device.
+// Only the meta folder is created here because it doesn't depend on deviceID.
+// The photo folder and all Syncthing registration are deferred to
+// ensureFoldersRegistered(), which runs after StartSyncthing sets the real
+// device ID from the TLS certificate.
 func createEventFolders(c *Client, event *Event) error {
 	eventIDLower := strings.ToLower(event.ID)
-	deviceIDLower := strings.ToLower(c.deviceID)
-
-	event.PhotoFolderID = "photos-" + eventIDLower + "-" + deviceIDLower
 	event.MetaFolderID = "meta-" + eventIDLower
+	// PhotoFolderID is set later by ensureFoldersRegistered when deviceID is known.
 
-	photoPath := filepath.Join(c.dataDir, eventIDLower+"-"+deviceIDLower+"-photos")
-	if err := os.MkdirAll(photoPath, 0700); err != nil {
-		return fmt.Errorf("creating photo folder: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Join(photoPath, ".stfolder"), 0755); err != nil {
-		return fmt.Errorf("creating photo .stfolder marker: %w", err)
-	}
-
-	metaPath := filepath.Join(c.dataDir, eventIDLower+"-meta")
+	metaPath := filepath.Join(c.dataDir, event.MetaFolderID)
 	if err := os.MkdirAll(metaPath, 0700); err != nil {
 		return fmt.Errorf("creating meta folder: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Join(metaPath, ".stfolder"), 0755); err != nil {
 		return fmt.Errorf("creating meta .stfolder marker: %w", err)
-	}
-
-	if c.syncthing != nil {
-		// Register this device's SendOnly photo folder with Syncthing.
-		// Other participants will add a ReceiveOnly mirror when they discover us.
-		if err := c.syncthing.AddFolder(event.PhotoFolderID, photoPath, "sendonly"); err != nil {
-			return fmt.Errorf("registering photo folder with Syncthing: %w", err)
-		}
-
-		// Register the shared SendReceive meta folder. All participants sync
-		// device announcements and event metadata through this folder.
-		if err := c.syncthing.AddFolder(event.MetaFolderID, metaPath, "sendreceive"); err != nil {
-			return fmt.Errorf("registering meta folder with Syncthing: %w", err)
-		}
 	}
 
 	return nil
@@ -194,7 +169,7 @@ func (c *Client) ensureFoldersRegistered(eventID string) error {
 
 	// Meta folder — sendreceive, shared by all participants.
 	metaFolderID := "meta-" + eventIDLower
-	metaPath := filepath.Join(c.dataDir, eventIDLower+"-meta")
+	metaPath := filepath.Join(c.dataDir, metaFolderID)
 	if err := os.MkdirAll(metaPath, 0700); err != nil {
 		return fmt.Errorf("creating meta folder: %w", err)
 	}
@@ -207,7 +182,7 @@ func (c *Client) ensureFoldersRegistered(eventID string) error {
 
 	// Own photo folder — sendonly, this device's uploads.
 	photoFolderID := "photos-" + eventIDLower + "-" + deviceIDLower
-	photoPath := filepath.Join(c.dataDir, eventIDLower+"-"+deviceIDLower+"-photos")
+	photoPath := filepath.Join(c.dataDir, photoFolderID)
 	if err := os.MkdirAll(photoPath, 0700); err != nil {
 		return fmt.Errorf("creating photo folder: %w", err)
 	}
@@ -255,7 +230,7 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 
 	// 4. Create a ReceiveOnly folder for the host's photos so we can pull them.
 	hostPhotoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(hostDeviceID)
-	hostPhotoPath := filepath.Join(c.dataDir, eventIDLower+"-"+strings.ToLower(hostDeviceID)+"-photos")
+	hostPhotoPath := filepath.Join(c.dataDir, hostPhotoFolderID)
 	if err := os.MkdirAll(hostPhotoPath, 0700); err != nil {
 		log.Printf("GoCore: BootstrapConnection mkdir host photos error: %v", err)
 	}
@@ -295,7 +270,8 @@ func (c *Client) AddParticipant(eventID, participantDeviceID string) error {
 //  4. Shares our own SendOnly photo folder with the participant so they can
 //     pull our photos.
 func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) error {
-	participantPath := filepath.Join(c.dataDir, strings.ToLower(eventID)+"-"+strings.ToLower(participantDeviceID)+"-photos")
+	participantPhotoFolderID := "photos-" + strings.ToLower(eventID) + "-" + strings.ToLower(participantDeviceID)
+	participantPath := filepath.Join(c.dataDir, participantPhotoFolderID)
 	if err := os.MkdirAll(participantPath, 0700); err != nil {
 		return fmt.Errorf("creating participant photo folder: %w", err)
 	}
@@ -308,7 +284,6 @@ func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) 
 	}
 
 	eventIDLower := strings.ToLower(eventID)
-	participantIDLower := strings.ToLower(participantDeviceID)
 
 	// 1. Add the remote device to Syncthing so we can connect to it.
 	if err := c.syncthing.AddPeer(participantDeviceID); err != nil {
@@ -316,7 +291,6 @@ func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) 
 	}
 
 	// 2. Register a ReceiveOnly folder to pull the participant's photos.
-	participantPhotoFolderID := "photos-" + eventIDLower + "-" + participantIDLower
 	if err := c.syncthing.AddFolder(participantPhotoFolderID, participantPath, "receiveonly"); err != nil {
 		return fmt.Errorf("registering participant photo folder with Syncthing: %w", err)
 	}

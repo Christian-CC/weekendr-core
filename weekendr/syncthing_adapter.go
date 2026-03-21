@@ -89,25 +89,21 @@ func (a *sushitrainAdapter) DevicesPendingFolder(folderID string) ([]string, err
 }
 
 // expectedFolderPath derives the correct folder path from a folder ID and the
-// current dataDir using the naming convention:
+// current dataDir. The folder path basename matches the folder ID:
 //
-//	meta-{eventID}                 → {dataDir}/{eventID}-meta
-//	photos-{eventID}-{deviceID}    → {dataDir}/{eventID}-{deviceID}-photos
+//	meta-{eventID}                 → {dataDir}/meta-{eventID}
+//	photos-{eventID}-{deviceID}    → {dataDir}/photos-{eventID}-{deviceID}
 //
 // Returns "" if the folder ID doesn't match a known pattern.
 func expectedFolderPath(folderID, dataDir string) string {
 	switch {
 	case strings.HasPrefix(folderID, "meta-"):
-		eventID := strings.TrimPrefix(folderID, "meta-")
-		return filepath.Join(dataDir, eventID+"-meta")
+		return filepath.Join(dataDir, folderID)
 	case strings.HasPrefix(folderID, "photos-"):
-		// photos-{eventID}-{deviceID} — deviceID is always the last 63 chars
+		// Validate format: photos-{eventID}-{deviceID} where deviceID is 63 chars.
 		rest := strings.TrimPrefix(folderID, "photos-")
-		// Device IDs are 63 chars (8×7 + 7 hyphens). Split from the right.
 		if len(rest) > 64 && rest[len(rest)-64] == '-' {
-			eventID := rest[:len(rest)-64]
-			deviceID := rest[len(rest)-63:]
-			return filepath.Join(dataDir, eventID+"-"+deviceID+"-photos")
+			return filepath.Join(dataDir, folderID)
 		}
 		return ""
 	default:
