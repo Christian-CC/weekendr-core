@@ -39,17 +39,37 @@ type SyncthingClient interface {
 
 	// SetFolderRescanInterval sets the periodic rescan interval for a folder.
 	SetFolderRescanInterval(folderID string, seconds int) error
+
+	// FolderExists returns true if the folder is registered in Syncthing config.
+	FolderExists(folderID string) bool
+
+	// FolderIDs returns the IDs of all folders registered in Syncthing config.
+	FolderIDs() *StringList
+
+	// RemoveFolder unlinks a folder from Syncthing config without deleting files.
+	RemoveFolder(folderID string) error
 }
+
+// StringList wraps a string slice for gomobile compatibility (gomobile cannot
+// bridge []string return types).
+type StringList struct{ items []string }
+
+// Get returns the string at index i.
+func (l *StringList) Get(i int) string { return l.items[i] }
+
+// Size returns the number of strings in the list.
+func (l *StringList) Size() int { return len(l.items) }
 
 // Client is the main entry point for the Weekendr Go core.
 // All state is held here and accessed via methods.
 type Client struct {
-	deviceID       string
-	dataDir        string
-	activeEventID  string // set by CreateEvent/JoinEvent; used by StartSyncthing to register folders
-	watchers       map[string]chan struct{}
-	syncthing      SyncthingClient // nil until SetSyncthing is called
-	syncthingReady chan struct{}
+	deviceID              string
+	dataDir               string
+	activeEventID         string // set by CreateEvent/JoinEvent; used by StartSyncthing to register folders
+	watchers              map[string]chan struct{}
+	syncthing             SyncthingClient // nil until SetSyncthing is called
+	syncthingReady        chan struct{}
+	processedParticipants map[string]bool // keyed by "eventID:deviceID", prevents duplicate processing
 }
 
 // NewClient initialises the Weekendr core.
@@ -59,9 +79,10 @@ func NewClient(dataDir string) (*Client, error) {
 		return nil, fmt.Errorf("creating data dir: %w", err)
 	}
 	c := &Client{
-		dataDir:        dataDir,
-		watchers:       make(map[string]chan struct{}),
-		syncthingReady: make(chan struct{}),
+		dataDir:               dataDir,
+		watchers:              make(map[string]chan struct{}),
+		syncthingReady:        make(chan struct{}),
+		processedParticipants: make(map[string]bool),
 	}
 	return c, nil
 }

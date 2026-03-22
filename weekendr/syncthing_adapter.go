@@ -34,6 +34,30 @@ func (a *sushitrainAdapter) AddPeer(deviceID string) error {
 	return nil
 }
 
+func (a *sushitrainAdapter) FolderExists(folderID string) bool {
+	return a.st.FolderWithID(folderID) != nil
+}
+
+func (a *sushitrainAdapter) FolderIDs() *StringList {
+	list := a.st.Folders()
+	if list == nil {
+		return &StringList{}
+	}
+	ids := make([]string, list.Count())
+	for i := 0; i < list.Count(); i++ {
+		ids[i] = list.ItemAt(i)
+	}
+	return &StringList{items: ids}
+}
+
+func (a *sushitrainAdapter) RemoveFolder(folderID string) error {
+	folder := a.st.FolderWithID(folderID)
+	if folder == nil {
+		return fmt.Errorf("folder not found: %s", folderID)
+	}
+	return folder.Unlink()
+}
+
 func (a *sushitrainAdapter) ShareFolder(folderID, deviceID string) error {
 	log.Printf("GoCore: sushitrainAdapter.ShareFolder('%s', '%s')", folderID, deviceID)
 	folder := a.st.FolderWithID(folderID)
@@ -268,6 +292,9 @@ func (c *Client) StartSyncthing(dataDir string) error {
 			log.Printf("GoCore: ensureFoldersRegistered(%s): %v", eventID, err)
 		}
 	}
+
+	// Remove folders for events that are no longer in events.json.
+	c.cleanupStaleFolders()
 
 	// Signal that Syncthing is ready for use.
 	select {

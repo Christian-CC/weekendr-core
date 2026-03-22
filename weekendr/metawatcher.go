@@ -47,7 +47,9 @@ const watcherPollInterval = 100 * time.Millisecond
 //     c.syncthing != nil) registers the ReceiveOnly folder and shares the meta
 //     and photo folders with the new participant via Syncthing.
 //
-// Each device is processed at most once (tracked in knownDevices).
+// Each device is processed at most once per event, tracked both in the
+// goroutine-local knownDevices map and the client-level processedParticipants
+// map (which survives watcher restarts within the same session).
 func (c *Client) StartMetaWatcher(eventID string) error {
 	log.Printf("GoCore: StartMetaWatcher started for event %s", eventID)
 	if _, running := c.watchers[eventID]; running {
@@ -123,10 +125,20 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 						continue
 					}
 
+					// Client-level dedup: skip if already processed in this session
+					// (e.g. watcher restarted for the same event).
+					participantKey := eventID + ":" + deviceID
+					if c.processedParticipants[participantKey] {
+						log.Printf("GoCore: MetaWatcher skipping already-processed participant %s for event %s", deviceID, eventID)
+						knownDevices[deviceID] = true
+						continue
+					}
+
 					log.Printf("GoCore: MetaWatcher found new device %s (name: %s)", deviceID, announceName)
 					if err := c.addParticipantPhotoFolder(eventID, deviceID); err != nil {
 						log.Printf("metawatcher: addParticipantPhotoFolder(%s, %s): %v", eventID, deviceID, err)
 					}
+					c.processedParticipants[participantKey] = true
 					knownDevices[deviceID] = true
 				}
 			}
@@ -158,6 +170,9 @@ type deviceAnnouncement struct {
 //
 // so that MetaWatcher on peer devices can discover this device and set up
 // the Syncthing folders for P2P sync.
+//
+// To avoid triggering Syncthing conflict resolution on the send-receive
+// meta-folder, the file is only written if the content has actually changed.
 func (c *Client) AnnounceDevice(eventID string, name string) error {
 	log.Printf("GoCore: AnnounceDevice called for event %s (name: %s)", eventID, name)
 	devicesDir := filepath.Join(c.dataDir, "meta-"+eventID, "devices")
@@ -176,9 +191,26 @@ func (c *Client) AnnounceDevice(eventID string, name string) error {
 	}
 
 	annPath := filepath.Join(devicesDir, c.deviceID+".json")
+
+	// Skip write if the file already exists with identical content.
+	// Re-writing an unchanged file triggers Syncthing's conflict resolution
+	// on the send-receive meta-folder ("rename .syncthing.*.tmp: file exists").
+	if existing, readErr := os.ReadFile(annPath); readErr == nil {
+		// Compare only device_id and name — ignore announced_at so that
+		// repeated calls with the same identity are truly no-ops.
+		var existingAnn deviceAnnouncement
+		if json.Unmarshal(existing, &existingAnn) == nil &&
+			existingAnn.DeviceID == ann.DeviceID &&
+			existingAnn.Name == ann.Name {
+			log.Printf("GoCore: AnnounceDevice skipped (unchanged) %s", annPath)
+			return nil
+		}
+	}
+
 	if err := os.WriteFile(annPath, data, 0600); err != nil {
 		return fmt.Errorf("writing device announcement: %w", err)
 	}
 	log.Printf("GoCore: AnnounceDevice wrote %s", annPath)
 	return nil
 }
+

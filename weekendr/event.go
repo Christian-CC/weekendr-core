@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // generateEventID creates a URL-safe, lowercase random event ID.
@@ -84,6 +85,58 @@ func loadPersistedEventIDs(dataDir string) []string {
 		return nil
 	}
 	return f.EventIDs
+}
+
+// cleanupStaleFolders removes Syncthing folders whose event ID does not appear
+// in the set of known events. This runs once at startup after folders are
+// registered, preventing stale folders from accumulating across app restarts.
+func (c *Client) cleanupStaleFolders() {
+	if c.syncthing == nil {
+		return
+	}
+
+	// Build the set of known event IDs (lowercase for comparison).
+	knownEvents := map[string]bool{}
+	if c.activeEventID != "" {
+		knownEvents[strings.ToLower(c.activeEventID)] = true
+	}
+	for _, eid := range loadPersistedEventIDs(c.dataDir) {
+		knownEvents[strings.ToLower(eid)] = true
+	}
+
+	folderList := c.syncthing.FolderIDs()
+	for i := 0; i < folderList.Size(); i++ {
+		folderID := folderList.Get(i)
+		if !strings.HasPrefix(folderID, "photos-") && !strings.HasPrefix(folderID, "meta-") {
+			continue // not a weekendr folder
+		}
+
+		// Extract event ID from folder ID.
+		var eventID string
+		switch {
+		case strings.HasPrefix(folderID, "photos-"):
+			// photos-{eventID}-{deviceID}; device IDs are 63 chars.
+			rest := strings.TrimPrefix(folderID, "photos-")
+			if len(rest) > 64 && rest[len(rest)-64] == '-' {
+				eventID = rest[:len(rest)-64]
+			}
+		case strings.HasPrefix(folderID, "meta-"):
+			eventID = strings.TrimPrefix(folderID, "meta-")
+		}
+
+		if eventID == "" {
+			continue
+		}
+
+		if knownEvents[eventID] {
+			continue
+		}
+
+		log.Printf("GoCore: removed stale folder %s (event not found)", folderID)
+		if err := c.syncthing.RemoveFolder(folderID); err != nil {
+			log.Printf("GoCore: cleanupStaleFolders: RemoveFolder(%s): %v", folderID, err)
+		}
+	}
 }
 
 // createEventFolders creates the meta folder for an event on this device.
@@ -233,6 +286,12 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 	err = c.syncthing.ShareFolder(photoFolderID, hostDeviceID)
 	log.Printf("GoCore: ShareFolder(%s, %s) result: %v", photoFolderID, hostDeviceID, err)
 
+	// Give the relay time to register both devices before setting up
+	// receive-only folders. Without this pause the peer may not have
+	// announced itself yet ("Connection rejected error=unknown device").
+	log.Printf("GoCore: BootstrapConnection — waiting 2s for relay registration")
+	time.Sleep(2 * time.Second)
+
 	// 4. Create a ReceiveOnly folder for the host's photos so we can pull them.
 	hostPhotoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(hostDeviceID)
 	hostPhotoPath := filepath.Join(c.dataDir, hostPhotoFolderID)
@@ -275,6 +334,12 @@ func (c *Client) AddParticipant(eventID, participantDeviceID string) error {
 //  4. Shares our own SendOnly photo folder with the participant so they can
 //     pull our photos.
 func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) error {
+	log.Printf("GoCore: addParticipantPhotoFolder: deviceID=%s eventID=%s participant=%s", c.deviceID, eventID, participantDeviceID)
+
+	if c.deviceID == "" {
+		return fmt.Errorf("addParticipantPhotoFolder: deviceID is empty — Syncthing not yet initialized")
+	}
+
 	participantPhotoFolderID := "photos-" + strings.ToLower(eventID) + "-" + strings.ToLower(participantDeviceID)
 	participantPath := filepath.Join(c.dataDir, participantPhotoFolderID)
 	if err := os.MkdirAll(participantPath, 0700); err != nil {
@@ -313,9 +378,28 @@ func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) 
 
 	// 4. Share our SendOnly photo folder with the participant so they can receive our photos.
 	ourPhotoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(c.deviceID)
-	if err := c.syncthing.ShareFolder(ourPhotoFolderID, participantDeviceID); err != nil {
-		return fmt.Errorf("sharing our photo folder with participant: %w", err)
+	if !c.syncthing.FolderExists(ourPhotoFolderID) {
+		log.Printf("GoCore: WARN addParticipantPhotoFolder: own photo folder not yet registered: %s — skipping share", ourPhotoFolderID)
+		return fmt.Errorf("own photo folder not yet registered: %s", ourPhotoFolderID)
 	}
+	log.Printf("GoCore: addParticipantPhotoFolder: sharing own folder %s with %s", ourPhotoFolderID, participantDeviceID)
+	const maxShareAttempts = 3
+	var shareErr error
+	for attempt := 1; attempt <= maxShareAttempts; attempt++ {
+		shareErr = c.syncthing.ShareFolder(ourPhotoFolderID, participantDeviceID)
+		if shareErr == nil {
+			break
+		}
+		log.Printf("GoCore: WARN addParticipantPhotoFolder: ShareFolder attempt %d/%d failed: %v", attempt, maxShareAttempts, shareErr)
+		if attempt < maxShareAttempts {
+			time.Sleep(2 * time.Second)
+		}
+	}
+	if shareErr != nil {
+		log.Printf("GoCore: ERROR addParticipantPhotoFolder: ShareFolder(%s, %s) failed after %d attempts: %v", ourPhotoFolderID, participantDeviceID, maxShareAttempts, shareErr)
+		return fmt.Errorf("sharing our photo folder with participant: %w", shareErr)
+	}
+	log.Printf("GoCore: addParticipantPhotoFolder: ShareFolder(%s, %s) succeeded", ourPhotoFolderID, participantDeviceID)
 
 	return nil
 }

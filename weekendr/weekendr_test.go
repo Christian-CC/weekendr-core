@@ -268,6 +268,34 @@ func (m *mockSyncthing) ShareFolder(folderID, deviceID string) error {
 	return nil
 }
 
+func (m *mockSyncthing) FolderExists(folderID string) bool {
+	for _, f := range m.addedFolders {
+		if f.folderID == folderID {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *mockSyncthing) FolderIDs() *StringList {
+	ids := make([]string, len(m.addedFolders))
+	for i, f := range m.addedFolders {
+		ids[i] = f.folderID
+	}
+	return &StringList{items: ids}
+}
+
+func (m *mockSyncthing) RemoveFolder(folderID string) error {
+	folders := m.addedFolders[:0]
+	for _, f := range m.addedFolders {
+		if f.folderID != folderID {
+			folders = append(folders, f)
+		}
+	}
+	m.addedFolders = folders
+	return nil
+}
+
 func (m *mockSyncthing) RescanFolder(folderID string) error {
 	return nil
 }
@@ -314,9 +342,11 @@ func TestMetaWatcherTriggersBootstrap(t *testing.T) {
 	eventID := "watcher-bootstrap"
 	participantID := "ZZZZZZZ-YYYYYYY-XXXXXXX-WWWWWWW-VVVVVVV-UUUUUUU-TTTTTTT-SSSSSSS"
 
-	// Create event folders so the meta directory exists.
+	// Create event folders and register them with Syncthing so the own
+	// photo folder exists (required by the FolderExists pre-check).
 	ev := &Event{ID: eventID, Name: "Watcher Bootstrap"}
 	require.NoError(t, createEventFolders(c, ev))
+	require.NoError(t, c.ensureFoldersRegistered(eventID))
 
 	// Write a device announcement file simulating a participant.
 	devicesDir := filepath.Join(c.dataDir, "meta-"+eventID, "devices")
@@ -443,4 +473,32 @@ func TestJoinEventPersistsID(t *testing.T) {
 
 	ids := loadPersistedEventIDs(c.dataDir)
 	assert.Contains(t, ids, "persist-join", "JoinEvent should persist the event ID to disk")
+}
+
+func TestCleanupStaleFolders(t *testing.T) {
+	c := newTestClient(t)
+	mock := &mockSyncthing{}
+	c.syncthing = mock
+
+	// Persist one known event.
+	require.NoError(t, persistEventID(c.dataDir, "active-evt"))
+
+	// Simulate folders from two events: one active, one stale.
+	activeDevice := strings.ToLower(c.deviceID)
+	mock.AddFolder("meta-active-evt", "/tmp/meta-active-evt", "sendreceive")
+	mock.AddFolder("photos-active-evt-"+activeDevice, "/tmp/photos-active", "sendonly")
+	mock.AddFolder("meta-gone-evt", "/tmp/meta-gone-evt", "sendreceive")
+	mock.AddFolder("photos-gone-evt-"+activeDevice, "/tmp/photos-gone", "sendonly")
+
+	c.cleanupStaleFolders()
+
+	remaining := mock.FolderIDs()
+	remainingSlice := make([]string, remaining.Size())
+	for i := 0; i < remaining.Size(); i++ {
+		remainingSlice[i] = remaining.Get(i)
+	}
+	assert.Contains(t, remainingSlice, "meta-active-evt", "active meta folder should be kept")
+	assert.Contains(t, remainingSlice, "photos-active-evt-"+activeDevice, "active photo folder should be kept")
+	assert.NotContains(t, remainingSlice, "meta-gone-evt", "stale meta folder should be removed")
+	assert.NotContains(t, remainingSlice, "photos-gone-evt-"+activeDevice, "stale photo folder should be removed")
 }

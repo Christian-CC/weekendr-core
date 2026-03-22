@@ -3,7 +3,7 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at https://mozilla.org/MPL/2.0/.
-.PHONY: lint format macos ios clean build cleanup
+.PHONY: lint format macos ios clean build cleanup xcframework
 
 build: macos ios
 
@@ -92,6 +92,9 @@ ios: core provisioning
 		DEVELOPMENT_TEAM=$(TEAM_ID) \
 		CODE_SIGN_STYLE="Manual" \
 		clean archive
+
+xcframework:
+	gomobile bind -tags noassets -target ios -o WeekendrCore.xcframework ./weekendr/
 
 cleanup:
 	# Clean up
