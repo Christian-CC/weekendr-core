@@ -105,6 +105,9 @@ func (c *Client) cleanupStaleFolders() {
 	}
 
 	folderList := c.syncthing.FolderIDs()
+	log.Printf("DEBUG cleanup: starting, will check %d folders against %d known events", folderList.Size(), len(knownEvents))
+
+	removedCount := 0
 	for i := 0; i < folderList.Size(); i++ {
 		folderID := folderList.Get(i)
 		if !strings.HasPrefix(folderID, "photos-") && !strings.HasPrefix(folderID, "meta-") {
@@ -136,7 +139,30 @@ func (c *Client) cleanupStaleFolders() {
 		if err := c.syncthing.RemoveFolder(folderID); err != nil {
 			log.Printf("GoCore: cleanupStaleFolders: RemoveFolder(%s): %v", folderID, err)
 		}
+		removedCount++
 	}
+	log.Printf("DEBUG cleanup: done, removed %d stale folders", removedCount)
+}
+
+// SetActiveEventIDs updates the persisted events list to only include the given
+// event IDs. Call this from the Swift layer after fetching active events from the
+// API (GET /devices/{deviceID}/events) so that Go only registers folders for
+// events that actually exist on the server.
+func (c *Client) SetActiveEventIDs(ids *StringList) error {
+	active := make([]string, ids.Size())
+	for i := 0; i < ids.Size(); i++ {
+		active[i] = ids.Get(i)
+	}
+	data, err := json.Marshal(eventsFile{EventIDs: active})
+	if err != nil {
+		return fmt.Errorf("marshalling events.json: %w", err)
+	}
+	path := filepath.Join(c.dataDir, "events.json")
+	log.Printf("DEBUG SetActiveEventIDs: writing %d events to %s", len(active), path)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("writing events.json: %w", err)
+	}
+	return nil
 }
 
 // createEventFolders creates the meta folder for an event on this device.
@@ -254,6 +280,15 @@ func (c *Client) ensureFoldersRegistered(eventID string) error {
 	return nil
 }
 
+// EnsureFoldersRegistered is the exported entry point for registering an
+// event's meta and photo folders with Syncthing. Call this after CreateEvent
+// or JoinEvent when Syncthing is already running — StartSyncthing only
+// registers folders for events known at startup time, so mid-session events
+// need an explicit call.
+func (c *Client) EnsureFoldersRegistered(eventID string) error {
+	return c.ensureFoldersRegistered(eventID)
+}
+
 // BootstrapConnection connects a joining device to the event host by adding
 // the host as a Syncthing peer and sharing the meta and photo folders with it.
 // Errors are logged but not returned — bootstrapping is best-effort so that a
@@ -276,6 +311,19 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 
 	// 2. Share meta folder with host.
 	metaFolderID := "meta-" + eventIDLower
+	metaFolderPath := filepath.Join(c.dataDir, metaFolderID)
+	log.Printf("DEBUG bootstrap: meta-folder path = %s", metaFolderPath)
+	if info, statErr := os.Stat(metaFolderPath); statErr == nil {
+		log.Printf("DEBUG bootstrap: meta-folder exists = true (isDir=%v)", info.IsDir())
+	} else {
+		log.Printf("DEBUG bootstrap: meta-folder exists = false (err=%v)", statErr)
+	}
+	devicesDir := filepath.Join(metaFolderPath, "devices")
+	if info, statErr := os.Stat(devicesDir); statErr == nil {
+		log.Printf("DEBUG bootstrap: devices dir exists = true (isDir=%v)", info.IsDir())
+	} else {
+		log.Printf("DEBUG bootstrap: devices dir exists = false (err=%v)", statErr)
+	}
 	log.Printf("GoCore: ShareFolder called with folderID='%s' deviceID='%s'", metaFolderID, hostDeviceID)
 	err = c.syncthing.ShareFolder(metaFolderID, hostDeviceID)
 	log.Printf("GoCore: ShareFolder(%s, %s) result: %v", metaFolderID, hostDeviceID, err)
@@ -360,9 +408,12 @@ func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) 
 		return fmt.Errorf("adding participant device to Syncthing: %w", err)
 	}
 
-	// 2. Register a ReceiveOnly folder to pull the participant's photos.
-	if err := c.syncthing.AddFolder(participantPhotoFolderID, participantPath, "receiveonly"); err != nil {
-		return fmt.Errorf("registering participant photo folder with Syncthing: %w", err)
+	// 2. Register a ReceiveOnly folder to pull the participant's photos (idempotent — skip if exists).
+	if !c.syncthing.FolderExists(participantPhotoFolderID) {
+		if err := c.syncthing.AddFolder(participantPhotoFolderID, participantPath, "receiveonly"); err != nil {
+			return fmt.Errorf("registering participant photo folder with Syncthing: %w", err)
+		}
+		log.Printf("GoCore: addParticipantPhotoFolder: registered folder %s", participantPhotoFolderID)
 	}
 
 	// 2b. Share the participant's photo folder WITH the participant so they send to it.
@@ -372,15 +423,20 @@ func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) 
 
 	// 3. Share the meta folder with the new participant for bidirectional metadata sync.
 	metaFolderID := "meta-" + eventIDLower
+	if !c.syncthing.FolderExists(metaFolderID) {
+		log.Printf("GoCore: WARN addParticipantPhotoFolder: meta folder %s not registered yet, will retry", metaFolderID)
+		return fmt.Errorf("RETRY_NEEDED: meta folder %s not registered yet", metaFolderID)
+	}
 	if err := c.syncthing.ShareFolder(metaFolderID, participantDeviceID); err != nil {
 		return fmt.Errorf("sharing meta folder with participant: %w", err)
 	}
+	log.Printf("GoCore: addParticipantPhotoFolder: shared meta folder %s with %s", metaFolderID, participantDeviceID)
 
 	// 4. Share our SendOnly photo folder with the participant so they can receive our photos.
 	ourPhotoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(c.deviceID)
 	if !c.syncthing.FolderExists(ourPhotoFolderID) {
-		log.Printf("GoCore: WARN addParticipantPhotoFolder: own photo folder not yet registered: %s — skipping share", ourPhotoFolderID)
-		return fmt.Errorf("own photo folder not yet registered: %s", ourPhotoFolderID)
+		log.Printf("GoCore: WARN addParticipantPhotoFolder: own folder %s not registered yet, will retry", ourPhotoFolderID)
+		return fmt.Errorf("RETRY_NEEDED: own photo folder %s not registered yet", ourPhotoFolderID)
 	}
 	log.Printf("GoCore: addParticipantPhotoFolder: sharing own folder %s with %s", ourPhotoFolderID, participantDeviceID)
 	const maxShareAttempts = 3

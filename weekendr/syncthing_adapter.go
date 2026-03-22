@@ -200,6 +200,7 @@ func migrateFolderPaths(st *sushitrain.Client, dataDir string) {
 // loads and starts it, then wires it into the Weekendr client via
 // SetSyncthing. This avoids spawning a second Go runtime from Swift.
 func (c *Client) StartSyncthing(dataDir string) error {
+	log.Printf("GoCore: WeekendrCore version %s starting", Version)
 	configDir := filepath.Join(dataDir, "syncthing", "config")
 
 	if err := os.MkdirAll(configDir, 0700); err != nil {
@@ -277,6 +278,11 @@ func (c *Client) StartSyncthing(dataDir string) error {
 	// could only create OS directories — folder IDs had an empty device ID.
 	// On app restart c.activeEventID is empty, so we also load persisted
 	// event IDs from disk to re-register all previously joined events.
+	//
+	// Only register events whose meta-folder directory exists on disk.
+	// This avoids registering stale events that were removed server-side
+	// but left in events.json. The Swift layer can call SetActiveEventIDs()
+	// before StartSyncthing to prune the list using the API.
 	registered := map[string]bool{}
 	if c.activeEventID != "" {
 		if err := c.ensureFoldersRegistered(c.activeEventID); err != nil {
@@ -288,12 +294,18 @@ func (c *Client) StartSyncthing(dataDir string) error {
 		if registered[eventID] {
 			continue
 		}
+		metaDir := filepath.Join(c.dataDir, "meta-"+strings.ToLower(eventID))
+		if _, statErr := os.Stat(metaDir); statErr != nil {
+			log.Printf("GoCore: skipping stale event %s (meta-folder %s not found)", eventID, metaDir)
+			continue
+		}
 		if err := c.ensureFoldersRegistered(eventID); err != nil {
 			log.Printf("GoCore: ensureFoldersRegistered(%s): %v", eventID, err)
 		}
 	}
 
-	// Remove folders for events that are no longer in events.json.
+	// Remove Syncthing folders for events no longer in events.json or
+	// whose meta-folder has been deleted.
 	c.cleanupStaleFolders()
 
 	// Signal that Syncthing is ready for use.

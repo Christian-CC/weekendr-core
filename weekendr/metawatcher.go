@@ -51,17 +51,52 @@ const watcherPollInterval = 100 * time.Millisecond
 // goroutine-local knownDevices map and the client-level processedParticipants
 // map (which survives watcher restarts within the same session).
 func (c *Client) StartMetaWatcher(eventID string) error {
-	log.Printf("GoCore: StartMetaWatcher started for event %s", eventID)
-	if _, running := c.watchers[eventID]; running {
-		return nil
+	log.Printf("GoCore: StartMetaWatcher called for event %s, watchers map has %d entries", eventID, len(c.watchers))
+	if entry, exists := c.watchers[eventID]; exists {
+		log.Printf("DEBUG metawatcher: found existing watcher entry for %s, checking alive channel", eventID)
+		select {
+		case <-entry.alive:
+			log.Printf("DEBUG metawatcher: dead watcher found for %s — restarting", eventID)
+			delete(c.watchers, eventID)
+		default:
+			log.Printf("DEBUG metawatcher: watcher still alive for %s — skipping", eventID)
+			return nil
+		}
+	} else {
+		log.Printf("DEBUG metawatcher: no existing watcher for %s — starting fresh", eventID)
 	}
 
-	stop := make(chan struct{})
-	c.watchers[eventID] = stop
+	entry := &watcherEntry{
+		stop:  make(chan struct{}),
+		alive: make(chan struct{}),
+	}
+	c.watchers[eventID] = entry
 
 	devicesDir := filepath.Join(c.dataDir, "meta-"+eventID, "devices")
+	log.Printf("DEBUG metawatcher: watching devicesDir=%s", devicesDir)
 
 	go func() {
+		log.Printf("DEBUG metawatcher: goroutine LAUNCHED for event %s", eventID)
+		defer close(entry.alive)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("ERROR metawatcher: PANIC: %v", r)
+			}
+			log.Printf("DEBUG metawatcher: goroutine EXITED for event %s", eventID)
+		}()
+		log.Printf("DEBUG metawatcher: devicesDir=%s", devicesDir)
+
+		// Immediate ReadDir to check directory state on startup.
+		entries, err := os.ReadDir(devicesDir)
+		if err != nil {
+			log.Printf("DEBUG metawatcher: INITIAL ReadDir failed: %v", err)
+		} else {
+			log.Printf("DEBUG metawatcher: INITIAL scan found %d files", len(entries))
+			for _, e := range entries {
+				log.Printf("DEBUG metawatcher: found file: %s", e.Name())
+			}
+		}
+
 		knownDevices := map[string]bool{}
 		var scanLogCounter int
 
@@ -70,22 +105,26 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 
 		for {
 			select {
-			case <-stop:
+			case <-entry.stop:
 				return
 			case <-ticker.C:
 				scanLogCounter++
 				entries, err := os.ReadDir(devicesDir)
 				if err != nil {
-					// Directory may not exist yet; keep polling.
+					// Log ReadDir failures every ~30 seconds so we can see
+					// whether the directory exists at all.
+					if scanLogCounter%300 == 0 {
+						log.Printf("DEBUG metawatcher: ReadDir(%s) failed: %v", devicesDir, err)
+					}
 					continue
 				}
 
 				// Log scan status every ~30 seconds (300 ticks at 100ms).
 				if scanLogCounter%300 == 0 {
-					log.Printf("GoCore: MetaWatcher scanning — found %d device files", len(entries))
+					log.Printf("DEBUG metawatcher: scanning %s, found %d files", devicesDir, len(entries))
 					for _, e := range entries {
 						if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
-							log.Printf("GoCore: MetaWatcher — device file: %s", e.Name())
+							log.Printf("DEBUG metawatcher: device file: %s", e.Name())
 						}
 					}
 				}
@@ -129,12 +168,13 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 					// (e.g. watcher restarted for the same event).
 					participantKey := eventID + ":" + deviceID
 					if c.processedParticipants[participantKey] {
-						log.Printf("GoCore: MetaWatcher skipping already-processed participant %s for event %s", deviceID, eventID)
+						log.Printf("DEBUG metawatcher: skipping known participant %s (event %s) — already processed this session", deviceID, eventID)
 						knownDevices[deviceID] = true
 						continue
 					}
 
 					log.Printf("GoCore: MetaWatcher found new device %s (name: %s)", deviceID, announceName)
+					log.Printf("DEBUG metawatcher: calling addParticipantPhotoFolder for %s (event %s)", deviceID, eventID)
 					if err := c.addParticipantPhotoFolder(eventID, deviceID); err != nil {
 						log.Printf("metawatcher: addParticipantPhotoFolder(%s, %s): %v", eventID, deviceID, err)
 					}
@@ -150,8 +190,8 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 
 // StopMetaWatcher stops watching the meta-folder for the given event.
 func (c *Client) StopMetaWatcher(eventID string) error {
-	if stop, ok := c.watchers[eventID]; ok {
-		close(stop)
+	if entry, ok := c.watchers[eventID]; ok {
+		close(entry.stop)
 		delete(c.watchers, eventID)
 	}
 	return nil
@@ -210,7 +250,8 @@ func (c *Client) AnnounceDevice(eventID string, name string) error {
 	if err := os.WriteFile(annPath, data, 0600); err != nil {
 		return fmt.Errorf("writing device announcement: %w", err)
 	}
-	log.Printf("GoCore: AnnounceDevice wrote %s", annPath)
+	log.Printf("DEBUG announceDevice: wrote %s", annPath)
+	_, statErr := os.Stat(annPath)
+	log.Printf("DEBUG announceDevice: file exists after write = %v", statErr == nil)
 	return nil
 }
-

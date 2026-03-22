@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// Version is incremented manually on each xcframework build.
+const Version = "0.1.12"
+
+// CoreVersion returns the build version so Swift can read it via gomobile.
+func CoreVersion() string { return Version }
+
 // SyncthingClient is the subset of the Syncthing API required by Weekendr.
 //
 // In production this interface is satisfied by an adapter around
@@ -54,11 +60,23 @@ type SyncthingClient interface {
 // bridge []string return types).
 type StringList struct{ items []string }
 
+// NewStringList creates an empty StringList. Use Add() to append items.
+func NewStringList() *StringList { return &StringList{} }
+
+// Add appends a string to the list.
+func (l *StringList) Add(s string) { l.items = append(l.items, s) }
+
 // Get returns the string at index i.
 func (l *StringList) Get(i int) string { return l.items[i] }
 
 // Size returns the number of strings in the list.
 func (l *StringList) Size() int { return len(l.items) }
+
+// watcherEntry tracks a running metawatcher goroutine.
+type watcherEntry struct {
+	stop  chan struct{} // closed to signal the goroutine to exit
+	alive chan struct{} // closed when the goroutine actually exits
+}
 
 // Client is the main entry point for the Weekendr Go core.
 // All state is held here and accessed via methods.
@@ -66,7 +84,7 @@ type Client struct {
 	deviceID              string
 	dataDir               string
 	activeEventID         string // set by CreateEvent/JoinEvent; used by StartSyncthing to register folders
-	watchers              map[string]chan struct{}
+	watchers              map[string]*watcherEntry
 	syncthing             SyncthingClient // nil until SetSyncthing is called
 	syncthingReady        chan struct{}
 	processedParticipants map[string]bool // keyed by "eventID:deviceID", prevents duplicate processing
@@ -80,7 +98,7 @@ func NewClient(dataDir string) (*Client, error) {
 	}
 	c := &Client{
 		dataDir:               dataDir,
-		watchers:              make(map[string]chan struct{}),
+		watchers:              make(map[string]*watcherEntry),
 		syncthingReady:        make(chan struct{}),
 		processedParticipants: make(map[string]bool),
 	}
