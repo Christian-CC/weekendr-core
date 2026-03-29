@@ -8,7 +8,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.12"
+const Version = "0.1.13"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -82,6 +82,7 @@ type watcherEntry struct {
 // All state is held here and accessed via methods.
 type Client struct {
 	deviceID              string
+	userID                string // persistent identity set by SetUserID; used for photo folder naming when non-empty
 	dataDir               string
 	activeEventID         string // set by CreateEvent/JoinEvent; used by StartSyncthing to register folders
 	watchers              map[string]*watcherEntry
@@ -142,6 +143,26 @@ func (c *Client) WaitForSyncthing(timeoutSeconds int) bool {
 
 // DeviceID returns this device's Syncthing device ID.
 func (c *Client) DeviceID() string {
+	return c.deviceID
+}
+
+// SetUserID sets the persistent user identity used for photo folder naming.
+// Call this once at app startup, before EnsureFoldersRegistered.
+func (c *Client) SetUserID(userID string) {
+	c.userID = userID
+}
+
+// UserID returns the persistent user ID (empty if not set).
+func (c *Client) UserID() string {
+	return c.userID
+}
+
+// folderIdentity returns the identity string used for photo folder naming.
+// Prefers userID when set; falls back to deviceID for backward compatibility.
+func (c *Client) folderIdentity() string {
+	if c.userID != "" {
+		return c.userID
+	}
 	return c.deviceID
 }
 

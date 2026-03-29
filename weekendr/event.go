@@ -244,7 +244,7 @@ func (c *Client) ensureFoldersRegistered(eventID string) error {
 	}
 
 	eventIDLower := strings.ToLower(eventID)
-	deviceIDLower := strings.ToLower(c.deviceID)
+	identityLower := strings.ToLower(c.folderIdentity())
 
 	// Meta folder — sendreceive, shared by all participants.
 	metaFolderID := "meta-" + eventIDLower
@@ -260,7 +260,7 @@ func (c *Client) ensureFoldersRegistered(eventID string) error {
 	}
 
 	// Own photo folder — sendonly, this device's uploads.
-	photoFolderID := "photos-" + eventIDLower + "-" + deviceIDLower
+	photoFolderID := "photos-" + eventIDLower + "-" + identityLower
 	photoPath := filepath.Join(c.dataDir, photoFolderID)
 	if err := os.MkdirAll(photoPath, 0700); err != nil {
 		return fmt.Errorf("creating photo folder: %w", err)
@@ -329,7 +329,7 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 	log.Printf("GoCore: ShareFolder(%s, %s) result: %v", metaFolderID, hostDeviceID, err)
 
 	// 3. Share our photo folder with host.
-	photoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(c.deviceID)
+	photoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(c.folderIdentity())
 	log.Printf("GoCore: ShareFolder called with folderID='%s' deviceID='%s'", photoFolderID, hostDeviceID)
 	err = c.syncthing.ShareFolder(photoFolderID, hostDeviceID)
 	log.Printf("GoCore: ShareFolder(%s, %s) result: %v", photoFolderID, hostDeviceID, err)
@@ -433,7 +433,7 @@ func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) 
 	log.Printf("GoCore: addParticipantPhotoFolder: shared meta folder %s with %s", metaFolderID, participantDeviceID)
 
 	// 4. Share our SendOnly photo folder with the participant so they can receive our photos.
-	ourPhotoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(c.deviceID)
+	ourPhotoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(c.folderIdentity())
 	if !c.syncthing.FolderExists(ourPhotoFolderID) {
 		log.Printf("GoCore: WARN addParticipantPhotoFolder: own folder %s not registered yet, will retry", ourPhotoFolderID)
 		return fmt.Errorf("RETRY_NEEDED: own photo folder %s not registered yet", ourPhotoFolderID)
