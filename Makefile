@@ -95,6 +95,8 @@ ios: core provisioning
 
 xcframework:
 	gomobile bind -tags noassets -target ios -o WeekendrCore.xcframework ./weekendr/
+	cp -R WeekendrCore.xcframework ../weekendr-ios/WeekendrCore.xcframework
+	@echo "XCFramework built and copied to weekendr-ios"
 
 cleanup:
 	# Clean up
