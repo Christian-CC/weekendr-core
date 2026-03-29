@@ -365,8 +365,10 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 // AddParticipant is the exported entry point for adding a newly discovered
 // participant. It delegates to addParticipantPhotoFolder which creates the OS
 // directory and (when c.syncthing != nil) registers Syncthing folders/peers.
+// participantIdentity is the identity used for folder naming (userID if known,
+// otherwise deviceID). Pass empty string to use participantDeviceID as fallback.
 func (c *Client) AddParticipant(eventID, participantDeviceID string) error {
-	return c.addParticipantPhotoFolder(eventID, participantDeviceID)
+	return c.addParticipantPhotoFolder(eventID, participantDeviceID, participantDeviceID)
 }
 
 // addParticipantPhotoFolder sets up everything needed to receive photos from a
@@ -381,14 +383,20 @@ func (c *Client) AddParticipant(eventID, participantDeviceID string) error {
 //     event metadata bidirectionally.
 //  4. Shares our own SendOnly photo folder with the participant so they can
 //     pull our photos.
-func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID string) error {
-	log.Printf("GoCore: addParticipantPhotoFolder: deviceID=%s eventID=%s participant=%s", c.deviceID, eventID, participantDeviceID)
+func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID, participantIdentity string) error {
+	log.Printf("GoCore: addParticipantPhotoFolder: deviceID=%s eventID=%s participant=%s identity=%s", c.deviceID, eventID, participantDeviceID, participantIdentity)
 
 	if c.deviceID == "" {
 		return fmt.Errorf("addParticipantPhotoFolder: deviceID is empty — Syncthing not yet initialized")
 	}
 
-	participantPhotoFolderID := "photos-" + strings.ToLower(eventID) + "-" + strings.ToLower(participantDeviceID)
+	// Use participantIdentity (userID) for folder naming; fall back to deviceID
+	folderIdentity := participantIdentity
+	if folderIdentity == "" {
+		folderIdentity = participantDeviceID
+	}
+
+	participantPhotoFolderID := "photos-" + strings.ToLower(eventID) + "-" + strings.ToLower(folderIdentity)
 	participantPath := filepath.Join(c.dataDir, participantPhotoFolderID)
 	if err := os.MkdirAll(participantPath, 0700); err != nil {
 		return fmt.Errorf("creating participant photo folder: %w", err)

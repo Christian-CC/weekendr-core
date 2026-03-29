@@ -141,13 +141,15 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 					deviceID := strings.TrimSuffix(name, ".json")
 
 					// Read the JSON written by AnnounceDevice to validate
-					// and extract the participant name.
+					// and extract the participant name and userID.
 					var announceName string
+					var announceUserID string
 					jsonPath := filepath.Join(devicesDir, name)
 					if raw, readErr := os.ReadFile(jsonPath); readErr == nil {
 						var ann deviceAnnouncement
 						if jsonErr := json.Unmarshal(raw, &ann); jsonErr == nil {
 							announceName = ann.Name
+							announceUserID = ann.UserID
 							if ann.DeviceID != "" && ann.DeviceID != deviceID {
 								log.Printf("metawatcher: %s: JSON device_id %q != filename %q, using filename",
 									name, ann.DeviceID, deviceID)
@@ -173,9 +175,15 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 						continue
 					}
 
-					log.Printf("GoCore: MetaWatcher found new device %s (name: %s)", deviceID, announceName)
-					log.Printf("DEBUG metawatcher: calling addParticipantPhotoFolder for %s (event %s)", deviceID, eventID)
-					if err := c.addParticipantPhotoFolder(eventID, deviceID); err != nil {
+					// Use participant's userID for folder naming if available
+					participantIdentity := announceUserID
+					if participantIdentity == "" {
+						participantIdentity = deviceID
+					}
+
+					log.Printf("GoCore: MetaWatcher found new device %s (name: %s, userID: %s)", deviceID, announceName, announceUserID)
+					log.Printf("DEBUG metawatcher: calling addParticipantPhotoFolder for %s identity=%s (event %s)", deviceID, participantIdentity, eventID)
+					if err := c.addParticipantPhotoFolder(eventID, deviceID, participantIdentity); err != nil {
 						log.Printf("metawatcher: addParticipantPhotoFolder(%s, %s): %v", eventID, deviceID, err)
 					}
 					c.processedParticipants[participantKey] = true
@@ -200,6 +208,7 @@ func (c *Client) StopMetaWatcher(eventID string) error {
 // deviceAnnouncement is the JSON written by AnnounceDevice and read by MetaWatcher.
 type deviceAnnouncement struct {
 	DeviceID    string `json:"device_id"`
+	UserID      string `json:"user_id"`
 	Name        string `json:"name"`
 	AnnouncedAt string `json:"announced_at"`
 }
@@ -222,6 +231,7 @@ func (c *Client) AnnounceDevice(eventID string, name string) error {
 
 	ann := deviceAnnouncement{
 		DeviceID:    c.deviceID,
+		UserID:      c.folderIdentity(),
 		Name:        name,
 		AnnouncedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -241,6 +251,7 @@ func (c *Client) AnnounceDevice(eventID string, name string) error {
 		var existingAnn deviceAnnouncement
 		if json.Unmarshal(existing, &existingAnn) == nil &&
 			existingAnn.DeviceID == ann.DeviceID &&
+			existingAnn.UserID == ann.UserID &&
 			existingAnn.Name == ann.Name {
 			log.Printf("GoCore: AnnounceDevice skipped (unchanged) %s", annPath)
 			return nil

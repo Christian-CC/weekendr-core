@@ -119,7 +119,7 @@ func TestAddParticipantPhotoFolder(t *testing.T) {
 	eventID := "party-2025"
 	participantID := "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
 
-	if err := c.addParticipantPhotoFolder(eventID, participantID); err != nil {
+	if err := c.addParticipantPhotoFolder(eventID, participantID, participantID); err != nil {
 		t.Fatalf("addParticipantPhotoFolder: %v", err)
 	}
 
