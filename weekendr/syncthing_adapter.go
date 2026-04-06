@@ -132,7 +132,7 @@ func (a *sushitrainAdapter) DevicesPendingFolder(folderID string) ([]string, err
 // current dataDir. The folder path basename matches the folder ID:
 //
 //	meta-{eventID}                 → {dataDir}/meta-{eventID}
-//	photos-{eventID}-{deviceID}    → {dataDir}/photos-{eventID}-{deviceID}
+//	photos-{eventID}-{userID}      → {dataDir}/photos-{eventID}-{userID}
 //
 // Returns "" if the folder ID doesn't match a known pattern.
 func expectedFolderPath(folderID, dataDir string) string {
@@ -140,9 +140,9 @@ func expectedFolderPath(folderID, dataDir string) string {
 	case strings.HasPrefix(folderID, "meta-"):
 		return filepath.Join(dataDir, folderID)
 	case strings.HasPrefix(folderID, "photos-"):
-		// Validate format: photos-{eventID}-{deviceID} where deviceID is 63 chars.
+		// Validate format: photos-{eventID}-{userID}; at least two segments after "photos-".
 		rest := strings.TrimPrefix(folderID, "photos-")
-		if len(rest) > 64 && rest[len(rest)-64] == '-' {
+		if idx := strings.LastIndex(rest, "-"); idx > 0 && idx < len(rest)-1 {
 			return filepath.Join(dataDir, folderID)
 		}
 		return ""
@@ -438,7 +438,7 @@ func (c *Client) GetConnectionStatus(eventID string) string {
 }
 
 // acceptPendingFolders checks for folders that connected peers are offering and
-// automatically accepts them. Photo folders (photos-{eventID}-{deviceID}) are
+// automatically accepts them. Photo folders (photos-{eventID}-{userID}) are
 // registered as ReceiveOnly; meta folders (meta-{eventID}) as SendReceive.
 // This handles the case where a remote device announces folders before we've
 // registered them (e.g. the host announces its photo folder to a joiner that
@@ -475,12 +475,13 @@ func (c *Client) acceptPendingFolders() {
 
 		switch {
 		case strings.HasPrefix(folderID, "photos-"):
-			// Parse photos-{eventID}-{deviceID}; device IDs are 63 chars.
+			// Parse photos-{eventID}-{userID}; find the last dash to split.
 			rest := strings.TrimPrefix(folderID, "photos-")
-			if len(rest) <= 64 || rest[len(rest)-64] != '-' {
+			idx := strings.LastIndex(rest, "-")
+			if idx <= 0 || idx >= len(rest)-1 {
 				continue
 			}
-			eventID = rest[:len(rest)-64]
+			eventID = rest[:idx]
 			folderType = "receiveonly"
 
 		case strings.HasPrefix(folderID, "meta-"):

@@ -33,7 +33,7 @@ type Event struct {
 	State         string
 	StartsAt      int64
 	EndsAt        int64
-	PhotoFolderID string // "photos-{eventID}-{deviceID}"
+	PhotoFolderID string // "photos-{eventID}-{userID}"
 	MetaFolderID  string // "meta-{eventID}"
 }
 
@@ -118,10 +118,10 @@ func (c *Client) cleanupStaleFolders() {
 		var eventID string
 		switch {
 		case strings.HasPrefix(folderID, "photos-"):
-			// photos-{eventID}-{deviceID}; device IDs are 63 chars.
+			// photos-{eventID}-{userID}; find the last dash to split.
 			rest := strings.TrimPrefix(folderID, "photos-")
-			if len(rest) > 64 && rest[len(rest)-64] == '-' {
-				eventID = rest[:len(rest)-64]
+			if idx := strings.LastIndex(rest, "-"); idx > 0 {
+				eventID = rest[:idx]
 			}
 		case strings.HasPrefix(folderID, "meta-"):
 			eventID = strings.TrimPrefix(folderID, "meta-")
