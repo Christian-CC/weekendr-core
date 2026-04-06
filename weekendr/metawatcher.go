@@ -2,7 +2,9 @@ package weekendr
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -259,7 +261,12 @@ func (c *Client) AnnounceDevice(eventID string, name string) error {
 	}
 
 	if err := os.WriteFile(annPath, data, 0600); err != nil {
-		return fmt.Errorf("writing device announcement: %w", err)
+		// Syncthing may have written the file concurrently via
+		// meta-folder sync — treat EEXIST as success.
+		if !errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("writing device announcement: %w", err)
+		}
+		log.Printf("GoCore: announceDevice: file already exists (Syncthing race), ignoring")
 	}
 	log.Printf("DEBUG announceDevice: wrote %s", annPath)
 	_, statErr := os.Stat(annPath)
