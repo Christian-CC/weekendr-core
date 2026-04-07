@@ -363,7 +363,27 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 // participantIdentity is the identity used for folder naming (userID if known,
 // otherwise deviceID). Pass empty string to use participantDeviceID as fallback.
 func (c *Client) AddParticipant(eventID, participantDeviceID string) error {
-	return c.addParticipantPhotoFolder(eventID, participantDeviceID, participantDeviceID)
+	// Resolve userID from device announcement JSON for correct photo folder naming.
+	// The file is written by the participant's AnnounceDevice and synced via meta-folder.
+	identity := participantDeviceID
+	annPath := filepath.Join(c.dataDir, "meta-"+strings.ToLower(eventID), "devices", participantDeviceID+".json")
+	for i := 0; i < 10; i++ {
+		if raw, err := os.ReadFile(annPath); err == nil {
+			var ann deviceAnnouncement
+			if json.Unmarshal(raw, &ann) == nil && ann.UserID != "" {
+				identity = ann.UserID
+				log.Printf("GoCore: AddParticipant: resolved userID=%s for device %s", identity, participantDeviceID)
+				break
+			}
+		}
+		if i < 9 {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	if identity == participantDeviceID {
+		log.Printf("GoCore: WARN AddParticipant: no userID found for device %s after 5s, using deviceID as fallback", participantDeviceID)
+	}
+	return c.addParticipantPhotoFolder(eventID, participantDeviceID, identity)
 }
 
 // addParticipantPhotoFolder sets up everything needed to receive photos from a
