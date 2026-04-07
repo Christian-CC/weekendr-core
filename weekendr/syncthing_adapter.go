@@ -59,17 +59,21 @@ func (a *sushitrainAdapter) RemoveFolder(folderID string) error {
 }
 
 func (a *sushitrainAdapter) ShareFolder(folderID, deviceID string) error {
-	log.Printf("GoCore: sushitrainAdapter.ShareFolder('%s', '%s')", folderID, deviceID)
+	return a.ShareFolderEncrypted(folderID, deviceID, "")
+}
+
+func (a *sushitrainAdapter) ShareFolderEncrypted(folderID, deviceID, encryptionPassword string) error {
+	log.Printf("GoCore: sushitrainAdapter.ShareFolderEncrypted('%s', '%s', enc=%d chars)", folderID, deviceID, len(encryptionPassword))
 	folder := a.st.FolderWithID(folderID)
 	if folder == nil {
-		log.Printf("GoCore: ShareFolder error: folder not found: %s", folderID)
+		log.Printf("GoCore: ShareFolderEncrypted error: folder not found: %s", folderID)
 		return fmt.Errorf("folder not found: %s", folderID)
 	}
-	if err := folder.ShareWithDevice(deviceID, true, ""); err != nil {
-		log.Printf("GoCore: ShareFolder error: %v", err)
+	if err := folder.ShareWithDevice(deviceID, true, encryptionPassword); err != nil {
+		log.Printf("GoCore: ShareFolderEncrypted error: %v", err)
 		return err
 	}
-	log.Printf("GoCore: ShareFolder succeeded for folder=%s device=%s", folderID, deviceID)
+	log.Printf("GoCore: ShareFolderEncrypted succeeded for folder=%s device=%s", folderID, deviceID)
 	return nil
 }
 

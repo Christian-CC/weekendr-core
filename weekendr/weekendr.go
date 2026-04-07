@@ -2,13 +2,17 @@
 package weekendr
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
+	"strings"
 	"time"
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.17"
+const Version = "0.1.18"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -38,6 +42,9 @@ type SyncthingClient interface {
 
 	// ShareFolder shares an already-registered folder with a remote device.
 	ShareFolder(folderID, deviceID string) error
+
+	// ShareFolderEncrypted shares a folder with a remote device using an encryption password.
+	ShareFolderEncrypted(folderID, deviceID, encryptionPassword string) error
 
 	// RescanFolder triggers an immediate rescan of a folder so that
 	// newly written files are picked up without waiting for the periodic interval.
@@ -88,7 +95,8 @@ type Client struct {
 	watchers              map[string]*watcherEntry
 	syncthing             SyncthingClient // nil until SetSyncthing is called
 	syncthingReady        chan struct{}
-	processedParticipants map[string]bool // keyed by "eventID:deviceID", prevents duplicate processing
+	processedParticipants map[string]bool   // keyed by "eventID:deviceID", prevents duplicate processing
+	folderKeys            map[string]string // eventID → folderKey, set by SetFolderKey
 }
 
 // NewClient initialises the Weekendr core.
@@ -102,6 +110,7 @@ func NewClient(dataDir string) (*Client, error) {
 		watchers:              make(map[string]*watcherEntry),
 		syncthingReady:        make(chan struct{}),
 		processedParticipants: make(map[string]bool),
+		folderKeys:            make(map[string]string),
 	}
 	return c, nil
 }
@@ -174,4 +183,68 @@ func (c *Client) RescanFolder(folderID string) error {
 		return nil
 	}
 	return c.syncthing.RescanFolder(folderID)
+}
+
+// SetFolderKey stores the encryption folder key for an event.
+// Call this after joining or creating an event so that
+// SharePhotoFolderWithHub can derive the encryption password.
+func (c *Client) SetFolderKey(eventID, folderKey string) {
+	c.folderKeys[strings.ToLower(eventID)] = folderKey
+}
+
+// FolderKey returns the stored folder key for an event (empty if not set).
+func (c *Client) FolderKey(eventID string) string {
+	return c.folderKeys[strings.ToLower(eventID)]
+}
+
+// SharePhotoFolderWithHub registers the hub as a Syncthing peer and shares
+// this device's photo folder with it using the correct encryption password.
+// The meta folder is shared without encryption.
+func (c *Client) SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey string) error {
+	if c.syncthing == nil {
+		return nil
+	}
+	if c.userID == "" {
+		return fmt.Errorf("SharePhotoFolderWithHub: userID not set")
+	}
+
+	eventIDLower := strings.ToLower(eventID)
+	userIDLower := strings.ToLower(c.userID)
+
+	// 1. Add hub as known peer
+	if err := c.syncthing.AddPeer(hubDeviceID); err != nil {
+		log.Printf("GoCore: SharePhotoFolderWithHub: AddPeer(%s): %v", hubDeviceID, err)
+	}
+
+	// 2. Share photo folder with hub using encryption password
+	photoFolderID := "photos-" + eventIDLower + "-" + userIDLower
+	encPassword := photoEncryptionPassword(folderKey, c.userID)
+	if c.syncthing.FolderExists(photoFolderID) {
+		if err := c.syncthing.ShareFolderEncrypted(photoFolderID, hubDeviceID, encPassword); err != nil {
+			return fmt.Errorf("SharePhotoFolderWithHub: share photo folder: %w", err)
+		}
+		log.Printf("GoCore: SharePhotoFolderWithHub: shared %s with %s (encrypted)", photoFolderID, hubDeviceID)
+	} else {
+		log.Printf("GoCore: SharePhotoFolderWithHub: photo folder %s not registered yet, skipping", photoFolderID)
+	}
+
+	// 3. Share meta folder with hub (no encryption)
+	metaFolderID := "meta-" + eventIDLower
+	if c.syncthing.FolderExists(metaFolderID) {
+		if err := c.syncthing.ShareFolder(metaFolderID, hubDeviceID); err != nil {
+			log.Printf("GoCore: SharePhotoFolderWithHub: share meta folder: %v", err)
+		} else {
+			log.Printf("GoCore: SharePhotoFolderWithHub: shared %s with %s", metaFolderID, hubDeviceID)
+		}
+	}
+
+	return nil
+}
+
+// photoEncryptionPassword derives the encryption password for a photo folder.
+// SHA256(folderKey + userID), hex-encoded, first 32 chars.
+// Identical to server-side photoEncryptionPassword.
+func photoEncryptionPassword(folderKey, userID string) string {
+	h := sha256.Sum256([]byte(folderKey + userID))
+	return hex.EncodeToString(h[:])[:32]
 }

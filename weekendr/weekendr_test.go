@@ -268,6 +268,11 @@ func (m *mockSyncthing) ShareFolder(folderID, deviceID string) error {
 	return nil
 }
 
+func (m *mockSyncthing) ShareFolderEncrypted(folderID, deviceID, encryptionPassword string) error {
+	m.sharedFolders = append(m.sharedFolders, struct{ folderID, deviceID string }{folderID, deviceID})
+	return nil
+}
+
 func (m *mockSyncthing) FolderExists(folderID string) bool {
 	for _, f := range m.addedFolders {
 		if f.folderID == folderID {
