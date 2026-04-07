@@ -34,6 +34,16 @@ func (a *sushitrainAdapter) AddPeer(deviceID string) error {
 	return nil
 }
 
+// SetDeviceAddresses sets the addresses for a known device.
+// Not part of SyncthingClient interface (gomobile cannot bridge []string).
+func (a *sushitrainAdapter) SetDeviceAddresses(deviceID string, addresses []string) error {
+	peer := a.st.PeerWithID(deviceID)
+	if peer == nil {
+		return fmt.Errorf("device not found: %s", deviceID)
+	}
+	return peer.SetAddresses(sushitrain.List(addresses))
+}
+
 func (a *sushitrainAdapter) FolderExists(folderID string) bool {
 	return a.st.FolderWithID(folderID) != nil
 }
