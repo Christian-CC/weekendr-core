@@ -336,7 +336,26 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 
 	// 4. Create a ReceiveOnly folder for the host's photos so we can pull them.
 	// Peer connections happen asynchronously via relay — no need to wait.
-	hostPhotoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(hostDeviceID)
+	// Resolve host's userID from device announcement for correct folder naming.
+	hostIdentity := hostDeviceID
+	annPath := filepath.Join(c.dataDir, "meta-"+eventIDLower, "devices", hostDeviceID+".json")
+	for i := 0; i < 10; i++ {
+		if raw, readErr := os.ReadFile(annPath); readErr == nil {
+			var ann deviceAnnouncement
+			if json.Unmarshal(raw, &ann) == nil && ann.UserID != "" {
+				hostIdentity = ann.UserID
+				log.Printf("GoCore: BootstrapConnection: resolved host userID=%s from device %s", hostIdentity, hostDeviceID)
+				break
+			}
+		}
+		if i < 9 {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	if hostIdentity == hostDeviceID {
+		log.Printf("GoCore: WARN BootstrapConnection: no userID for host device %s after 5s, using deviceID as fallback", hostDeviceID)
+	}
+	hostPhotoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(hostIdentity)
 	hostPhotoPath := filepath.Join(c.dataDir, hostPhotoFolderID)
 	if err := os.MkdirAll(hostPhotoPath, 0700); err != nil {
 		log.Printf("GoCore: BootstrapConnection mkdir host photos error: %v", err)
