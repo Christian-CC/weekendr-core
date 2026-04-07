@@ -5,14 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"time"
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.22"
+const Version = "0.1.23"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -201,19 +200,25 @@ func (c *Client) FolderKey(eventID string) string {
 // this device's photo folder with it using the correct encryption password.
 // The meta folder is shared without encryption.
 func (c *Client) SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey, hubAddress string) error {
+	fmt.Println("GoCore: SharePhotoFolderWithHub ENTER eventID=" + eventID + " hub=" + hubDeviceID + " addr=" + hubAddress + " folderKeyLen=" + fmt.Sprint(len(folderKey)))
 	if c.syncthing == nil {
+		fmt.Println("GoCore: SharePhotoFolderWithHub: syncthing is nil, skipping")
 		return nil
 	}
 	if c.userID == "" {
+		fmt.Println("GoCore: SharePhotoFolderWithHub: userID not set")
 		return fmt.Errorf("SharePhotoFolderWithHub: userID not set")
 	}
+	fmt.Println("GoCore: SharePhotoFolderWithHub: userID=" + c.userID)
 
 	eventIDLower := strings.ToLower(eventID)
 	userIDLower := strings.ToLower(c.userID)
 
 	// 1. Add hub as known peer and set its direct address
 	if err := c.syncthing.AddPeer(hubDeviceID); err != nil {
-		log.Printf("GoCore: SharePhotoFolderWithHub: AddPeer(%s): %v", hubDeviceID, err)
+		fmt.Println("GoCore: SharePhotoFolderWithHub: AddPeer error: " + err.Error())
+	} else {
+		fmt.Println("GoCore: SharePhotoFolderWithHub: AddPeer OK")
 	}
 	if hubAddress != "" {
 		type deviceAddresser interface {
@@ -221,9 +226,9 @@ func (c *Client) SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey, hubAdd
 		}
 		if da, ok := c.syncthing.(deviceAddresser); ok {
 			if err := da.SetDeviceAddresses(hubDeviceID, []string{hubAddress}); err != nil {
-				log.Printf("GoCore: SharePhotoFolderWithHub: SetDeviceAddresses(%s): %v", hubDeviceID, err)
+				fmt.Println("GoCore: SharePhotoFolderWithHub: SetDeviceAddresses error: " + err.Error())
 			} else {
-				log.Printf("GoCore: SharePhotoFolderWithHub: set hub address %s", hubAddress)
+				fmt.Println("GoCore: SharePhotoFolderWithHub: set hub address " + hubAddress)
 			}
 		}
 	}
@@ -231,35 +236,39 @@ func (c *Client) SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey, hubAdd
 	// 2. Share photo folder with hub using encryption password
 	photoFolderID := "photos-" + eventIDLower + "-" + userIDLower
 	encPassword := photoEncryptionPassword(folderKey)
+	fmt.Println("GoCore: SharePhotoFolderWithHub: photoFolderID=" + photoFolderID + " encPwd=" + encPassword[:8] + "...")
 
 	// Wait for folder to be registered (ensureFoldersRegistered may still be running)
 	for i := 0; i < 10; i++ {
 		if c.syncthing.FolderExists(photoFolderID) {
+			fmt.Println("GoCore: SharePhotoFolderWithHub: folder found on attempt " + fmt.Sprint(i+1))
 			break
 		}
-		log.Printf("GoCore: SharePhotoFolderWithHub: waiting for folder %s (%d/10)", photoFolderID, i+1)
+		fmt.Println("GoCore: SharePhotoFolderWithHub: waiting for folder " + photoFolderID + " (" + fmt.Sprint(i+1) + "/10)")
 		time.Sleep(500 * time.Millisecond)
 	}
 	if !c.syncthing.FolderExists(photoFolderID) {
-		log.Printf("GoCore: SharePhotoFolderWithHub: folder %s still not found after 5s", photoFolderID)
+		fmt.Println("GoCore: SharePhotoFolderWithHub: folder " + photoFolderID + " still not found after 5s")
 		return fmt.Errorf("photo folder not ready after timeout")
 	}
 
 	if err := c.syncthing.ShareFolderEncrypted(photoFolderID, hubDeviceID, encPassword); err != nil {
+		fmt.Println("GoCore: SharePhotoFolderWithHub: ShareFolderEncrypted error: " + err.Error())
 		return fmt.Errorf("SharePhotoFolderWithHub: share photo folder: %w", err)
 	}
-	log.Printf("GoCore: SharePhotoFolderWithHub: shared %s with %s (encrypted)", photoFolderID, hubDeviceID)
+	fmt.Println("GoCore: SharePhotoFolderWithHub: shared " + photoFolderID + " with " + hubDeviceID + " (encrypted)")
 
 	// 3. Share meta folder with hub (no encryption)
 	metaFolderID := "meta-" + eventIDLower
 	if c.syncthing.FolderExists(metaFolderID) {
 		if err := c.syncthing.ShareFolder(metaFolderID, hubDeviceID); err != nil {
-			log.Printf("GoCore: SharePhotoFolderWithHub: share meta folder: %v", err)
+			fmt.Println("GoCore: SharePhotoFolderWithHub: share meta folder error: " + err.Error())
 		} else {
-			log.Printf("GoCore: SharePhotoFolderWithHub: shared %s with %s", metaFolderID, hubDeviceID)
+			fmt.Println("GoCore: SharePhotoFolderWithHub: shared " + metaFolderID + " with " + hubDeviceID)
 		}
 	}
 
+	fmt.Println("GoCore: SharePhotoFolderWithHub: DONE")
 	return nil
 }
 
