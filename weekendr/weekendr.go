@@ -12,7 +12,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.18"
+const Version = "0.1.19"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -218,7 +218,7 @@ func (c *Client) SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey string)
 
 	// 2. Share photo folder with hub using encryption password
 	photoFolderID := "photos-" + eventIDLower + "-" + userIDLower
-	encPassword := photoEncryptionPassword(folderKey, c.userID)
+	encPassword := photoEncryptionPassword(folderKey)
 	if c.syncthing.FolderExists(photoFolderID) {
 		if err := c.syncthing.ShareFolderEncrypted(photoFolderID, hubDeviceID, encPassword); err != nil {
 			return fmt.Errorf("SharePhotoFolderWithHub: share photo folder: %w", err)
@@ -241,10 +241,10 @@ func (c *Client) SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey string)
 	return nil
 }
 
-// photoEncryptionPassword derives the encryption password for a photo folder.
-// SHA256(folderKey + userID), hex-encoded, first 32 chars.
+// photoEncryptionPassword derives the encryption password for photo folders.
+// SHA256(folderKey), hex-encoded, first 32 chars. Event-wide, same for all participants.
 // Identical to server-side photoEncryptionPassword.
-func photoEncryptionPassword(folderKey, userID string) string {
-	h := sha256.Sum256([]byte(folderKey + userID))
+func photoEncryptionPassword(folderKey string) string {
+	h := sha256.Sum256([]byte(folderKey))
 	return hex.EncodeToString(h[:])[:32]
 }
