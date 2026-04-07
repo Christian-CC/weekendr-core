@@ -334,13 +334,8 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 	err = c.syncthing.ShareFolder(photoFolderID, hostDeviceID)
 	log.Printf("GoCore: ShareFolder(%s, %s) result: %v", photoFolderID, hostDeviceID, err)
 
-	// Give the relay time to register both devices before setting up
-	// receive-only folders. Without this pause the peer may not have
-	// announced itself yet ("Connection rejected error=unknown device").
-	log.Printf("GoCore: BootstrapConnection — waiting 2s for relay registration")
-	time.Sleep(2 * time.Second)
-
 	// 4. Create a ReceiveOnly folder for the host's photos so we can pull them.
+	// Peer connections happen asynchronously via relay — no need to wait.
 	hostPhotoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(hostDeviceID)
 	hostPhotoPath := filepath.Join(c.dataDir, hostPhotoFolderID)
 	if err := os.MkdirAll(hostPhotoPath, 0700); err != nil {
