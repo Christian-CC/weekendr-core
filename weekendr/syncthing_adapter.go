@@ -216,6 +216,8 @@ func (c *Client) StartSyncthing(dataDir string) error {
 		if !strings.Contains(string(data), dataDir) {
 			os.Remove(configFile)
 			log.Printf("GoCore: removed stale Sushitrain config (container UUID changed)")
+			// Re-create config dir in case the removal left it missing
+			os.MkdirAll(configDir, 0700)
 		}
 	}
 
