@@ -370,6 +370,11 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 	if err := c.syncthing.ShareFolder(hostPhotoFolderID, hostDeviceID); err != nil {
 		log.Printf("GoCore: BootstrapConnection ShareFolder host photos error: %v", err)
 	}
+	// Also share the receiveonly host photo folder with the Weekendr hub so
+	// that Syncthing can pull from the hub when the host is offline. Hub
+	// coordinates were stored by SharePhotoFolderWithHub; this is a no-op if
+	// it has not been called yet.
+	c.shareReceiveOnlyFolderWithHub(eventID, hostPhotoFolderID)
 	log.Printf("GoCore: BootstrapConnection — created host photo folder %s at %s", hostPhotoFolderID, hostPhotoPath)
 
 	log.Printf("GoCore: BootstrapConnection — done")
@@ -462,6 +467,11 @@ func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID, partici
 	if err := c.syncthing.ShareFolder(participantPhotoFolderID, participantDeviceID); err != nil {
 		return fmt.Errorf("sharing participant photo folder with participant: %w", err)
 	}
+
+	// 2c. Also share the receiveonly participant photo folder with the
+	// Weekendr hub so Syncthing can pull blobs from the hub when the
+	// participant is offline. Idempotent — only fires once per folder.
+	c.shareReceiveOnlyFolderWithHub(eventID, participantPhotoFolderID)
 
 	// 3. Share the meta folder with the new participant for bidirectional metadata sync.
 	metaFolderID := "meta-" + eventIDLower

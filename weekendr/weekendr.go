@@ -11,7 +11,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.25"
+const Version = "0.1.26"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -84,6 +84,14 @@ type watcherEntry struct {
 	alive chan struct{} // closed when the goroutine actually exits
 }
 
+// hubInfo holds the per-event Weekendr hub coordinates so that receiveonly
+// folders created later (host or other participants) can also be shared with
+// the hub. Populated by SharePhotoFolderWithHub.
+type hubInfo struct {
+	deviceID string
+	address  string
+}
+
 // Client is the main entry point for the Weekendr Go core.
 // All state is held here and accessed via methods.
 type Client struct {
@@ -94,8 +102,10 @@ type Client struct {
 	watchers              map[string]*watcherEntry
 	syncthing             SyncthingClient // nil until SetSyncthing is called
 	syncthingReady        chan struct{}
-	processedParticipants map[string]bool   // keyed by "eventID:deviceID", prevents duplicate processing
-	folderKeys            map[string]string // eventID → folderKey, set by SetFolderKey
+	processedParticipants map[string]bool     // keyed by "eventID:deviceID", prevents duplicate processing
+	folderKeys            map[string]string   // eventID → folderKey, set by SetFolderKey
+	hubInfos              map[string]*hubInfo // eventID → hub deviceID/address, set by SharePhotoFolderWithHub
+	hubSharedFolders      map[string]bool     // folderID → true once the hub has been added as peer to that folder
 }
 
 // NewClient initialises the Weekendr core.
@@ -110,6 +120,8 @@ func NewClient(dataDir string) (*Client, error) {
 		syncthingReady:        make(chan struct{}),
 		processedParticipants: make(map[string]bool),
 		folderKeys:            make(map[string]string),
+		hubInfos:              make(map[string]*hubInfo),
+		hubSharedFolders:      make(map[string]bool),
 	}
 	return c, nil
 }
@@ -214,6 +226,13 @@ func (c *Client) SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey, hubAdd
 	eventIDLower := strings.ToLower(eventID)
 	userIDLower := strings.ToLower(c.userID)
 
+	// Remember hub coordinates for this event so receiveonly folders that are
+	// registered later (host's photo folder via BootstrapConnection, other
+	// participants' photo folders via addParticipantPhotoFolder) can also be
+	// shared with the hub. Without this, Syncthing would only know to pull
+	// from the participant directly and could never sync via the hub relay.
+	c.hubInfos[eventIDLower] = &hubInfo{deviceID: hubDeviceID, address: hubAddress}
+
 	// 1. Add hub as known peer and set its direct address
 	if err := c.syncthing.AddPeer(hubDeviceID); err != nil {
 		fmt.Println("GoCore: SharePhotoFolderWithHub: AddPeer error: " + err.Error())
@@ -270,6 +289,67 @@ func (c *Client) SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey, hubAdd
 
 	fmt.Println("GoCore: SharePhotoFolderWithHub: DONE")
 	return nil
+}
+
+// shareReceiveOnlyFolderWithHub registers the Weekendr hub as an additional
+// peer of a freshly-created receiveonly photo folder so that Syncthing can
+// pull the encrypted blobs from the hub when the originating device is offline
+// or unreachable.
+//
+// Called from BootstrapConnection (for the host's photo folder) and from
+// addParticipantPhotoFolder (for every other participant's photo folder).
+//
+// The folder is shared WITHOUT an encryption password — only the host's own
+// sendonly folder is uploaded to the hub via ShareFolderEncrypted; the
+// receiveonly side just consumes whatever the hub serves over the protocol.
+//
+// Idempotent: tracks per-folder state so repeated calls (e.g. metawatcher
+// invoking addParticipantPhotoFolder more than once) only act once.
+//
+// No-op if hub coordinates for the event are not yet known — that happens
+// when SharePhotoFolderWithHub has not been called yet for this event, in
+// which case the host's own SharePhotoFolderWithHub call will populate
+// c.hubInfos and any subsequent receiveonly folder registration will pick it
+// up automatically.
+func (c *Client) shareReceiveOnlyFolderWithHub(eventID, folderID string) {
+	if c.syncthing == nil {
+		return
+	}
+	if c.hubSharedFolders[folderID] {
+		return
+	}
+	hub, ok := c.hubInfos[strings.ToLower(eventID)]
+	if !ok || hub == nil || hub.deviceID == "" {
+		fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: no hub info for event " + eventID + ", skipping " + folderID)
+		return
+	}
+
+	// Register the hub as a known device (idempotent at the Syncthing layer).
+	if err := c.syncthing.AddPeer(hub.deviceID); err != nil {
+		fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: AddPeer error: " + err.Error())
+	}
+
+	// Pin the hub's direct address so the relay can be bypassed when reachable.
+	if hub.address != "" {
+		type deviceAddresser interface {
+			SetDeviceAddresses(deviceID string, addresses []string) error
+		}
+		if da, ok := c.syncthing.(deviceAddresser); ok {
+			if err := da.SetDeviceAddresses(hub.deviceID, []string{hub.address}); err != nil {
+				fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: SetDeviceAddresses error: " + err.Error())
+			}
+		}
+	}
+
+	// Add hub as peer of the receiveonly folder. NO encryption password — only
+	// the sender uploads encrypted; the receiver just pulls whatever the hub
+	// has on disk.
+	if err := c.syncthing.ShareFolder(folderID, hub.deviceID); err != nil {
+		fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: ShareFolder(" + folderID + ", " + hub.deviceID + ") error: " + err.Error())
+		return
+	}
+	c.hubSharedFolders[folderID] = true
+	fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: shared " + folderID + " with hub " + hub.deviceID)
 }
 
 // photoEncryptionPassword derives the encryption password for photo folders.
