@@ -11,7 +11,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.29"
+const Version = "0.1.30"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -374,28 +374,29 @@ func (c *Client) shareKnownReceiveOnlyFoldersWithHub(eventIDLower string) {
 
 // shareReceiveOnlyFolderWithHub registers the Weekendr hub as an additional
 // peer of a freshly-created receiveonly photo folder so that Syncthing can
-// pull the encrypted blobs from the hub when the originating device is offline
-// or unreachable.
+// pull the photos from the hub when the originating device is offline or
+// unreachable.
 //
 // Called from BootstrapConnection (for the host's photo folder) and from
 // addParticipantPhotoFolder (for every other participant's photo folder).
 //
-// The folder is shared via ShareFolderEncrypted with the same per-event
-// encryption password the sender used (SHA256(folderKey)[:32], hex). This is
-// MANDATORY: the hub stores the folder as receiveencrypted, and Syncthing
-// rejects a receiveonly→receiveencrypted link unless both sides know the
-// password ("remote has encrypted data and encrypts that data for us — this
-// is impossible").
+// The folder is shared via plain ShareFolder WITHOUT an encryption password.
+// The hub stores the folder as receiveencrypted because the original sender
+// (host) uploaded via ShareFolderEncrypted, but a receiveonly→hub link must
+// not pass a password — Syncthing's encrypted folder model expects the hub
+// to use the password it learned from the sender to serve plaintext to
+// receiveonly peers. Passing a password from the receiveonly side instead
+// triggers "remote has encrypted data and encrypts that data for us — this
+// is impossible".
 //
 // Idempotent: tracks per-folder state so repeated calls (e.g. metawatcher
 // invoking addParticipantPhotoFolder more than once) only act once.
 //
-// No-op if hub coordinates or the folderKey for the event are not yet known
-// — that happens when SharePhotoFolderWithHub has not been called yet for
-// this event, in which case the host's own SharePhotoFolderWithHub call will
-// populate c.hubInfos and c.folderKeys and any subsequent receiveonly folder
-// registration will pick them up automatically (or the deferred catch-up
-// loop in SharePhotoFolderWithHub will retroactively share them).
+// No-op if hub coordinates for the event are not yet known — that happens
+// when SharePhotoFolderWithHub has not been called yet for this event, in
+// which case the host's own SharePhotoFolderWithHub call will populate
+// c.hubInfos and the deferred catch-up loop will retroactively share any
+// already-registered receiveonly folders.
 func (c *Client) shareReceiveOnlyFolderWithHub(eventID, folderID string) {
 	if c.syncthing == nil {
 		return
@@ -409,16 +410,6 @@ func (c *Client) shareReceiveOnlyFolderWithHub(eventID, folderID string) {
 		fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: no hub info for event " + eventID + ", skipping " + folderID)
 		return
 	}
-
-	// The receiveonly folder MUST be shared with the hub using the same
-	// encryption password the host used, otherwise Syncthing refuses the link
-	// because the hub stores the folder as receiveencrypted.
-	folderKey := c.folderKeys[eventIDLower]
-	if folderKey == "" {
-		fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: no folderKey for event " + eventID + ", refusing to share " + folderID + " unencrypted")
-		return
-	}
-	encPassword := photoEncryptionPassword(folderKey)
 
 	// Register the hub as a known device (idempotent at the Syncthing layer).
 	if err := c.syncthing.AddPeer(hub.deviceID); err != nil {
@@ -437,13 +428,15 @@ func (c *Client) shareReceiveOnlyFolderWithHub(eventID, folderID string) {
 		}
 	}
 
-	// Add hub as peer of the receiveonly folder using the encryption password.
-	if err := c.syncthing.ShareFolderEncrypted(folderID, hub.deviceID, encPassword); err != nil {
-		fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: ShareFolderEncrypted(" + folderID + ", " + hub.deviceID + ") error: " + err.Error())
+	// Add hub as peer of the receiveonly folder. NO encryption password — the
+	// hub already knows the password from the host's encrypted upload and
+	// serves plaintext to receiveonly peers.
+	if err := c.syncthing.ShareFolder(folderID, hub.deviceID); err != nil {
+		fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: ShareFolder(" + folderID + ", " + hub.deviceID + ") error: " + err.Error())
 		return
 	}
 	c.hubSharedFolders[folderID] = true
-	fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: shared " + folderID + " with hub " + hub.deviceID + " (encrypted)")
+	fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: shared " + folderID + " with hub " + hub.deviceID)
 }
 
 // photoEncryptionPassword derives the encryption password for photo folders.
