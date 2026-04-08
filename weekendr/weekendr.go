@@ -11,7 +11,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.26"
+const Version = "0.1.27"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -233,6 +233,17 @@ func (c *Client) SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey, hubAdd
 	// from the participant directly and could never sync via the hub relay.
 	c.hubInfos[eventIDLower] = &hubInfo{deviceID: hubDeviceID, address: hubAddress}
 
+	// Retroactively share any receiveonly photo folders that were already
+	// registered for this event before the hub coordinates were known. On the
+	// Guest, BootstrapConnection runs before SharePhotoFolderWithHub and
+	// creates the host's receiveonly folder while c.hubInfos is still empty —
+	// without this catch-up loop the hub would never be added as a peer of
+	// that folder and Syncthing could not pull the host's photos via the hub.
+	// Done at the end of the function (after the hub address has been pinned)
+	// so the per-folder shareReceiveOnlyFolderWithHub call only has to do the
+	// ShareFolder step on already-known peer state.
+	defer c.shareKnownReceiveOnlyFoldersWithHub(eventIDLower)
+
 	// 1. Add hub as known peer and set its direct address
 	if err := c.syncthing.AddPeer(hubDeviceID); err != nil {
 		fmt.Println("GoCore: SharePhotoFolderWithHub: AddPeer error: " + err.Error())
@@ -289,6 +300,38 @@ func (c *Client) SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey, hubAdd
 
 	fmt.Println("GoCore: SharePhotoFolderWithHub: DONE")
 	return nil
+}
+
+// shareKnownReceiveOnlyFoldersWithHub iterates the receiveonly photo folders
+// already registered with Syncthing for the given event and shares each with
+// the hub. Called from SharePhotoFolderWithHub after c.hubInfos has been
+// populated, so that receiveonly folders created earlier (before the hub
+// coordinates were known — typically the host's folder created by the Guest's
+// BootstrapConnection) catch up to the new hub-as-peer state.
+//
+// "Receiveonly" is identified by the folder ID prefix `photos-{eventID}-`
+// excluding our own sendonly folder `photos-{eventID}-{userID}`. This avoids
+// querying the Syncthing folder type via the interface (which would require a
+// new method) at the cost of a string comparison.
+func (c *Client) shareKnownReceiveOnlyFoldersWithHub(eventIDLower string) {
+	if c.syncthing == nil {
+		return
+	}
+	ownPhotoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(c.userID)
+	prefix := "photos-" + eventIDLower + "-"
+
+	folderIDs := c.syncthing.FolderIDs()
+	for i := 0; i < folderIDs.Size(); i++ {
+		folderID := folderIDs.Get(i)
+		if !strings.HasPrefix(folderID, prefix) {
+			continue
+		}
+		if folderID == ownPhotoFolderID {
+			continue
+		}
+		fmt.Println("GoCore: shareKnownReceiveOnlyFoldersWithHub: catching up " + folderID)
+		c.shareReceiveOnlyFolderWithHub(eventIDLower, folderID)
+	}
 }
 
 // shareReceiveOnlyFolderWithHub registers the Weekendr hub as an additional
