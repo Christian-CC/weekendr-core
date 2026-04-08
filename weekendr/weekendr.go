@@ -11,7 +11,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.31"
+const Version = "0.1.32"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -364,7 +364,11 @@ func (c *Client) shareKnownReceiveOnlyFoldersWithHub(eventIDLower string) {
 		if !strings.HasPrefix(folderID, prefix) {
 			continue
 		}
-		if folderID == ownPhotoFolderID {
+		// Skip our own sendonly folder. The explicit c.userID != "" check
+		// guards against the degenerate "photos-{event}-" prefix that would
+		// otherwise match no real folder anyway, but mirrors the same shape
+		// as the guard in acceptPendingFolders for consistency.
+		if c.userID != "" && folderID == ownPhotoFolderID {
 			continue
 		}
 		fmt.Println("GoCore: shareKnownReceiveOnlyFoldersWithHub: catching up " + folderID)
@@ -405,6 +409,22 @@ func (c *Client) shareReceiveOnlyFolderWithHub(eventID, folderID string) {
 		return
 	}
 	eventIDLower := strings.ToLower(eventID)
+
+	// Hard chokepoint: never plain-share our OWN sendonly folder. The hub
+	// already has it as receiveencrypted (uploaded via ShareFolderEncrypted in
+	// SharePhotoFolderWithHub), so a plain ShareFolder against the hub here
+	// would trigger "remote expects to exchange encrypted data, but is
+	// configured for plain data". The catch-up loop already filters out the
+	// own folder, but addParticipantPhotoFolder can still reach this with our
+	// folder ID when another device announces itself with the same userID
+	// (e.g. the same account logged in twice) — metawatcher only de-dupes by
+	// deviceID, not by userID, so the participant path constructs a folder ID
+	// that collides with our own sendonly registration.
+	if c.userID != "" && folderID == "photos-"+eventIDLower+"-"+strings.ToLower(c.userID) {
+		fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: refusing to share own sendonly folder " + folderID)
+		return
+	}
+
 	hub, ok := c.hubInfos[eventIDLower]
 	if !ok || hub == nil || hub.deviceID == "" {
 		fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: no hub info for event " + eventID + ", skipping " + folderID)
