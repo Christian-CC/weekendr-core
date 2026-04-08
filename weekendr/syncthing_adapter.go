@@ -512,6 +512,17 @@ func (c *Client) acceptPendingFolders() {
 			continue
 		}
 
+		// Never accept a pending photo folder that is OUR OWN sendonly folder.
+		// The hub stores it as receiveencrypted (because we uploaded via
+		// ShareFolderEncrypted) and may offer it back to us via ClusterConfig.
+		// Registering it here as receiveonly and then plain-sharing it back to
+		// the hub produces "remote expects to exchange encrypted data, but is
+		// configured for plain data" — the symptom that motivated this guard.
+		if c.userID != "" && folderID == "photos-"+eventID+"-"+strings.ToLower(c.userID) {
+			log.Printf("GoCore: acceptPendingFolders: skipping own sendonly folder %s", folderID)
+			continue
+		}
+
 		// Determine the local path for this folder.
 		folderPath := expectedFolderPath(folderID, c.dataDir)
 		if folderPath == "" {
