@@ -142,6 +142,24 @@ func (c *Client) cleanupStaleFolders() {
 		removedCount++
 	}
 	log.Printf("DEBUG cleanup: done, removed %d stale folders", removedCount)
+
+	// Drop persisted hub-*.json files (and their in-memory mirrors) for any
+	// event that is no longer known. Without this, a stale hub-*.json would
+	// keep getting rehydrated on every NewClient and the in-memory map would
+	// hold pointers to events that no longer exist on disk.
+	hubInfosOnDisk := loadAllHubInfos(c.dataDir)
+	for eventIDLower := range hubInfosOnDisk {
+		if knownEvents[eventIDLower] {
+			continue
+		}
+		if err := removeHubInfo(c.dataDir, eventIDLower); err != nil {
+			log.Printf("GoCore: cleanupStaleFolders: removeHubInfo(%s): %v", eventIDLower, err)
+		} else {
+			log.Printf("GoCore: removed stale hub info for event %s", eventIDLower)
+		}
+		delete(c.hubInfos, eventIDLower)
+		delete(c.folderKeys, eventIDLower)
+	}
 }
 
 // SetActiveEventIDs updates the persisted events list to only include the given

@@ -11,7 +11,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.28"
+const Version = "0.1.29"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -123,6 +123,21 @@ func NewClient(dataDir string) (*Client, error) {
 		hubInfos:              make(map[string]*hubInfo),
 		hubSharedFolders:      make(map[string]bool),
 	}
+
+	// Hydrate hubInfos and folderKeys from disk before any folder registration
+	// runs. After an app restart with already-joined events, SharePhotoFolderWithHub
+	// is never called again — without this hydration step, every later
+	// shareReceiveOnlyFolderWithHub call would no-op for lack of hub coordinates,
+	// and the receiveonly folders would never sync via the hub.
+	for eventIDLower, info := range loadAllHubInfos(dataDir) {
+		if info.HubDeviceID != "" {
+			c.hubInfos[eventIDLower] = &hubInfo{deviceID: info.HubDeviceID, address: info.HubAddress}
+		}
+		if info.FolderKey != "" {
+			c.folderKeys[eventIDLower] = info.FolderKey
+		}
+	}
+
 	return c, nil
 }
 
@@ -239,6 +254,22 @@ func (c *Client) SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey, hubAdd
 	// shared with the hub. Without this, Syncthing would only know to pull
 	// from the participant directly and could never sync via the hub relay.
 	c.hubInfos[eventIDLower] = &hubInfo{deviceID: hubDeviceID, address: hubAddress}
+
+	// Persist hub coordinates and folder key to disk so that the next app
+	// launch can rehydrate them via NewClient → loadAllHubInfos. Without this,
+	// SharePhotoFolderWithHub would only ever be called once per join (Swift
+	// does not re-issue it for already-known events on restart) and every
+	// subsequent shareReceiveOnlyFolderWithHub call would no-op.
+	if err := writeHubInfo(c.dataDir, eventIDLower, persistedHubInfo{
+		HubDeviceID: hubDeviceID,
+		HubAddress:  hubAddress,
+		FolderKey:   folderKey,
+	}); err != nil {
+		fmt.Println("GoCore: SharePhotoFolderWithHub: persist hub info error: " + err.Error())
+		// Non-fatal: in-memory state is correct, only persistence is broken.
+	} else {
+		fmt.Println("GoCore: SharePhotoFolderWithHub: persisted hub info for event " + eventIDLower)
+	}
 
 	// Retroactively share any receiveonly photo folders that were already
 	// registered for this event before the hub coordinates were known. On the
