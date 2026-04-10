@@ -356,7 +356,7 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 	// Peer connections happen asynchronously via relay — no need to wait.
 	// Resolve host's userID from device announcement for correct folder naming.
 	hostIdentity := hostDeviceID
-	annPath := filepath.Join(c.dataDir, "meta-"+eventIDLower, "devices", hostDeviceID+".json")
+	annPath := filepath.Join(c.dataDir, "meta-"+eventIDLower, "devices", strings.ToLower(hostDeviceID)+".json")
 	for i := 0; i < 10; i++ {
 		if raw, readErr := os.ReadFile(annPath); readErr == nil {
 			var ann deviceAnnouncement
@@ -408,7 +408,7 @@ func (c *Client) AddParticipant(eventID, participantDeviceID string) error {
 	// Resolve userID from device announcement JSON for correct photo folder naming.
 	// The file is written by the participant's AnnounceDevice and synced via meta-folder.
 	identity := participantDeviceID
-	annPath := filepath.Join(c.dataDir, "meta-"+strings.ToLower(eventID), "devices", participantDeviceID+".json")
+	annPath := filepath.Join(c.dataDir, "meta-"+strings.ToLower(eventID), "devices", strings.ToLower(participantDeviceID)+".json")
 	for i := 0; i < 10; i++ {
 		if raw, err := os.ReadFile(annPath); err == nil {
 			var ann deviceAnnouncement

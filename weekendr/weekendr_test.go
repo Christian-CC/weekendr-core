@@ -150,7 +150,7 @@ func TestMetaWatcherDiscovery(t *testing.T) {
 	if err := os.MkdirAll(devicesDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	devFile := filepath.Join(devicesDir, participantID+".json")
+	devFile := filepath.Join(devicesDir, strings.ToLower(participantID)+".json")
 	if err := os.WriteFile(devFile, []byte(`{}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -181,8 +181,8 @@ func TestAnnounceDevice(t *testing.T) {
 		t.Fatalf("AnnounceDevice: %v", err)
 	}
 
-	// File must exist at devices/{deviceID}.json
-	annPath := filepath.Join(c.dataDir, "meta-"+eventID, "devices", c.deviceID+".json")
+	// File must exist at devices/{deviceID}.json (lowercase)
+	annPath := filepath.Join(c.dataDir, "meta-"+eventID, "devices", strings.ToLower(c.deviceID)+".json")
 	raw, err := os.ReadFile(annPath)
 	if err != nil {
 		t.Fatalf("announcement file not created: %v", err)
@@ -196,8 +196,8 @@ func TestAnnounceDevice(t *testing.T) {
 	if err := json.Unmarshal(raw, &ann); err != nil {
 		t.Fatalf("announcement file is not valid JSON: %v", err)
 	}
-	if ann.DeviceID != c.deviceID {
-		t.Errorf("device_id: got %q, want %q", ann.DeviceID, c.deviceID)
+	if ann.DeviceID != strings.ToLower(c.deviceID) {
+		t.Errorf("device_id: got %q, want %q", ann.DeviceID, strings.ToLower(c.deviceID))
 	}
 	if ann.Name != "Test User" {
 		t.Errorf("name: got %q, want %q", ann.Name, "Test User")
@@ -231,7 +231,7 @@ func TestMetaWatcherIgnoresOwnDevice(t *testing.T) {
 	if err := os.MkdirAll(devicesDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	devFile := filepath.Join(devicesDir, c.deviceID+".json")
+	devFile := filepath.Join(devicesDir, strings.ToLower(c.deviceID)+".json")
 	if err := os.WriteFile(devFile, []byte(`{}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestMetaWatcherTriggersBootstrap(t *testing.T) {
 	devicesDir := filepath.Join(c.dataDir, "meta-"+eventID, "devices")
 	require.NoError(t, os.MkdirAll(devicesDir, 0700))
 	ann := fmt.Sprintf(`{"device_id":"%s","announced_at":"2025-01-01T00:00:00Z"}`, participantID)
-	require.NoError(t, os.WriteFile(filepath.Join(devicesDir, participantID+".json"), []byte(ann), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(devicesDir, strings.ToLower(participantID)+".json"), []byte(ann), 0600))
 
 	// Start MetaWatcher — it should discover the participant.
 	require.NoError(t, c.StartMetaWatcher(eventID))
@@ -373,12 +373,12 @@ func TestMetaWatcherTriggersBootstrap(t *testing.T) {
 	}
 
 	// Verify AddPeer was called with the participant's device ID.
-	assert.Contains(t, mock.addedPeers, participantID, "MetaWatcher should AddPeer for discovered device")
+	assert.Contains(t, mock.addedPeers, strings.ToLower(participantID), "MetaWatcher should AddPeer for discovered device")
 
 	// Verify the participant's photo folder was shared.
 	foundShare := false
 	for _, s := range mock.sharedFolders {
-		if s.deviceID == participantID && strings.HasPrefix(s.folderID, "meta-") {
+		if s.deviceID == strings.ToLower(participantID) && strings.HasPrefix(s.folderID, "meta-") {
 			foundShare = true
 			break
 		}

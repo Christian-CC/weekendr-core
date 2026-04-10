@@ -140,7 +140,7 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 						continue
 					}
 					// Primary source: deviceID is encoded in the filename.
-					deviceID := strings.TrimSuffix(name, ".json")
+					deviceID := strings.ToLower(strings.TrimSuffix(name, ".json"))
 
 					// Read the JSON written by AnnounceDevice to validate
 					// and extract the participant name and userID.
@@ -160,7 +160,7 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 					}
 
 					// Skip our own device — we already have a SendOnly folder.
-					if deviceID == c.deviceID {
+					if deviceID == strings.ToLower(c.deviceID) {
 						continue
 					}
 
@@ -231,8 +231,9 @@ func (c *Client) AnnounceDevice(eventID string, name string) error {
 		return fmt.Errorf("creating devices dir: %w", err)
 	}
 
+	deviceIDLower := strings.ToLower(c.deviceID)
 	ann := deviceAnnouncement{
-		DeviceID:    c.deviceID,
+		DeviceID:    deviceIDLower,
 		UserID:      c.folderIdentity(),
 		Name:        name,
 		AnnouncedAt: time.Now().UTC().Format(time.RFC3339),
@@ -242,7 +243,7 @@ func (c *Client) AnnounceDevice(eventID string, name string) error {
 		return fmt.Errorf("marshaling device announcement: %w", err)
 	}
 
-	annPath := filepath.Join(devicesDir, c.deviceID+".json")
+	annPath := filepath.Join(devicesDir, deviceIDLower+".json")
 
 	// Skip write if the file already exists with identical content.
 	// Re-writing an unchanged file triggers Syncthing's conflict resolution
