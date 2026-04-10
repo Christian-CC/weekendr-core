@@ -282,6 +282,15 @@ func (m *mockSyncthing) FolderExists(folderID string) bool {
 	return false
 }
 
+func (m *mockSyncthing) FolderSharedWith(folderID, deviceID string) bool {
+	for _, s := range m.sharedFolders {
+		if s.folderID == folderID && s.deviceID == deviceID {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *mockSyncthing) FolderIDs() *StringList {
 	ids := make([]string, len(m.addedFolders))
 	for i, f := range m.addedFolders {

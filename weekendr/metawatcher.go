@@ -195,6 +195,24 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 		}
 	}()
 
+	// Periodic catch-up: retry hub sharing for receiveonly photo folders every
+	// 60 seconds. This covers cases where the initial shareReceiveOnlyFolderWithHub
+	// call failed (e.g. hub info not yet available) or where timing was unlucky.
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		eventIDLower := strings.ToLower(eventID)
+		for {
+			select {
+			case <-entry.stop:
+				return
+			case <-ticker.C:
+				log.Printf("GoCore: hub catch-up tick for event %s", eventIDLower)
+				c.shareKnownReceiveOnlyFoldersWithHub(eventIDLower)
+			}
+		}
+	}()
+
 	return nil
 }
 

@@ -60,6 +60,23 @@ func (a *sushitrainAdapter) FolderIDs() *StringList {
 	return &StringList{items: ids}
 }
 
+func (a *sushitrainAdapter) FolderSharedWith(folderID, deviceID string) bool {
+	folder := a.st.FolderWithID(folderID)
+	if folder == nil {
+		return false
+	}
+	devIDs := folder.SharedWithDeviceIDs()
+	if devIDs == nil {
+		return false
+	}
+	for i := 0; i < devIDs.Count(); i++ {
+		if devIDs.ItemAt(i) == deviceID {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *sushitrainAdapter) RemoveFolder(folderID string) error {
 	folder := a.st.FolderWithID(folderID)
 	if folder == nil {

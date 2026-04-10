@@ -491,6 +491,18 @@ func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID, partici
 	// participant is offline. Idempotent — only fires once per folder.
 	c.shareReceiveOnlyFolderWithHub(eventID, participantPhotoFolderID)
 
+	// 2d. Verify the hub share actually landed in Syncthing config.
+	// If not, retry once after 5 seconds (timing race with config write).
+	if hub, ok := c.hubInfos[eventIDLower]; ok && hub != nil && hub.deviceID != "" {
+		if !c.syncthing.FolderSharedWith(participantPhotoFolderID, hub.deviceID) {
+			log.Printf("GoCore: addParticipantPhotoFolder: hub share not confirmed for %s, retrying in 5s", participantPhotoFolderID)
+			go func(eid, fid string) {
+				time.Sleep(5 * time.Second)
+				c.shareReceiveOnlyFolderWithHub(eid, fid)
+			}(eventID, participantPhotoFolderID)
+		}
+	}
+
 	// 3. Share the meta folder with the new participant for bidirectional metadata sync.
 	metaFolderID := "meta-" + eventIDLower
 	if !c.syncthing.FolderExists(metaFolderID) {

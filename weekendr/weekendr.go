@@ -11,7 +11,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.36"
+const Version = "0.1.37"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -57,6 +57,9 @@ type SyncthingClient interface {
 
 	// FolderIDs returns the IDs of all folders registered in Syncthing config.
 	FolderIDs() *StringList
+
+	// FolderSharedWith returns true if the folder is shared with the given device.
+	FolderSharedWith(folderID, deviceID string) bool
 
 	// RemoveFolder unlinks a folder from Syncthing config without deleting files.
 	RemoveFolder(folderID string) error
