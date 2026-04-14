@@ -11,10 +11,28 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.37"
+const Version = "0.1.38"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
+
+// Private discovery and relay server URLs, injected by the embedding app via
+// Configure() before StartSyncthing runs. Empty by default so the public
+// repo contains no deployment-specific URLs.
+var (
+	discoveryServerURL string
+	relayServerURL     string
+)
+
+// Configure stores the private discovery and relay server URLs used by
+// configureServers when SetSyncthing is called. Must be called by the
+// embedding app (e.g. from Swift before StartSyncthing) to enable P2P sync
+// through Weekendr's private infrastructure. When both values are empty
+// (the default), configureServers leaves the Syncthing defaults untouched.
+func Configure(discoveryURL string, relayURL string) {
+	discoveryServerURL = discoveryURL
+	relayServerURL = relayURL
+}
 
 // SyncthingClient is the subset of the Syncthing API required by Weekendr.
 //
@@ -154,17 +172,30 @@ func (c *Client) SetSyncthing(s SyncthingClient) {
 }
 
 // configureServers sets Weekendr's private discovery and relay servers on s if
-// the concrete type supports it. The methods are accessed via a local interface
-// rather than SyncthingClient so that []string never appears in the exported
-// interface (gomobile cannot bridge slice parameters).
+// the concrete type supports it and Configure has been called with non-empty
+// URLs. The methods are accessed via a local interface rather than
+// SyncthingClient so that []string never appears in the exported interface
+// (gomobile cannot bridge slice parameters).
+//
+// When both discoveryServerURL and relayServerURL are empty, this function is
+// a no-op and the Syncthing defaults remain in effect.
 func configureServers(s SyncthingClient) {
+	if discoveryServerURL == "" && relayServerURL == "" {
+		return
+	}
 	type serverConfigurer interface {
 		SetDiscoveryServers(urls []string) error
 		SetRelayServers(urls []string) error
 	}
-	if sc, ok := s.(serverConfigurer); ok {
-		_ = sc.SetDiscoveryServers([]string{"https://discovery.getweekendr.app"})
-		_ = sc.SetRelayServers([]string{"relay://relay.getweekendr.app:22067/?id=2ITVNHO-U3GGZSU-XXLLEUM-RMDH5M5-XSUSVXK-6ENQX6F-C5PA377-LPK62Q7"})
+	sc, ok := s.(serverConfigurer)
+	if !ok {
+		return
+	}
+	if discoveryServerURL != "" {
+		_ = sc.SetDiscoveryServers([]string{discoveryServerURL})
+	}
+	if relayServerURL != "" {
+		_ = sc.SetRelayServers([]string{relayServerURL})
 	}
 }
 
