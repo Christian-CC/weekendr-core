@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -127,6 +128,8 @@ type Client struct {
 	folderKeys            map[string]string   // eventID → folderKey, set by SetFolderKey
 	hubInfos              map[string]*hubInfo // eventID → hub deviceID/address, set by SharePhotoFolderWithHub
 	hubSharedFolders      map[string]bool     // folderID → true once the hub has been added as peer to that folder
+	pendingTombstones     map[string]map[string]bool // eventID → set of filenames queued for deletion from photo_index
+	pendingTombstonesMu   sync.Mutex
 }
 
 // NewClient initialises the Weekendr core.
@@ -143,6 +146,7 @@ func NewClient(dataDir string) (*Client, error) {
 		folderKeys:            make(map[string]string),
 		hubInfos:              make(map[string]*hubInfo),
 		hubSharedFolders:      make(map[string]bool),
+		pendingTombstones:     make(map[string]map[string]bool),
 	}
 
 	// Hydrate hubInfos and folderKeys from disk before any folder registration
@@ -523,4 +527,114 @@ func (c *Client) shareReceiveOnlyFolderWithHub(eventID, folderID string) {
 func photoEncryptionPassword(folderKey string) string {
 	h := sha256.Sum256([]byte(folderKey))
 	return hex.EncodeToString(h[:])[:32]
+}
+
+// AddPhotoIndexEntry appends a single photo to the pending photo-index for
+// eventID (dedup by filename — a subsequent call with the same filename
+// replaces the earlier entry) and schedules a debounced flush via
+// SchedulePhotoIndexUpdate. Swift calls this per-photo during export;
+// bursts coalesce into a single disk write 2s after the last add.
+//
+// latitude/longitude are optional — pass nil when EXIF GPS is absent.
+func (c *Client) AddPhotoIndexEntry(eventID, filename, takenAt string, size int64, hash string, latitude, longitude *float64) error {
+	entry := PhotoIndexEntry{
+		Filename:  filename,
+		TakenAt:   takenAt,
+		Size:      size,
+		Hash:      hash,
+		Latitude:  latitude,
+		Longitude: longitude,
+	}
+
+	pendingMutex.Lock()
+	existing := pendingEntries[eventID]
+	filtered := make([]PhotoIndexEntry, 0, len(existing)+1)
+	for _, e := range existing {
+		if e.Filename != filename {
+			filtered = append(filtered, e)
+		}
+	}
+	filtered = append(filtered, entry)
+	pendingEntries[eventID] = filtered
+	pendingMutex.Unlock()
+
+	// A prior RemovePhotoIndexEntry in the same debounce window would have
+	// set a tombstone for this filename; clear it so the merge does not
+	// delete the re-added entry. Must happen before SchedulePhotoIndexUpdate
+	// so the next flush sees the cleared tombstone set.
+	c.pendingTombstonesMu.Lock()
+	if ts, ok := c.pendingTombstones[eventID]; ok {
+		delete(ts, filename)
+	}
+	c.pendingTombstonesMu.Unlock()
+
+	c.SchedulePhotoIndexUpdate(eventID, filtered)
+	return nil
+}
+
+// AddPhotoIndexEntryWithLocation is a gomobile-friendly wrapper around
+// AddPhotoIndexEntry. gomobile cannot bridge *float64, so this variant
+// accepts latitude/longitude as plain float64 plus a hasLocation flag and
+// internally constructs the pointers expected by AddPhotoIndexEntry.
+func (c *Client) AddPhotoIndexEntryWithLocation(eventID, filename, takenAt string, size int64, hash string, hasLocation bool, latitude, longitude float64) error {
+	var lat, lng *float64
+	if hasLocation {
+		lat = &latitude
+		lng = &longitude
+	}
+	return c.AddPhotoIndexEntry(eventID, filename, takenAt, size, hash, lat, lng)
+}
+
+// AddPhotoIndexEntryNoLocation is a gomobile-friendly wrapper around
+// AddPhotoIndexEntry for the no-GPS case.
+func (c *Client) AddPhotoIndexEntryNoLocation(eventID, filename, takenAt string, size int64, hash string) error {
+	return c.AddPhotoIndexEntry(eventID, filename, takenAt, size, hash, nil, nil)
+}
+
+// RemovePhotoIndexEntry marks filename for deletion from the photo_index by
+// recording a tombstone and immediately filtering the in-memory pending
+// buffer, then arms the debouncer so the next flush picks up the tombstone.
+// The merge step in SchedulePhotoIndexUpdate applies tombstones AFTER the
+// disk+pending merge, so a concurrent re-add of the same filename before the
+// flush cannot resurrect the entry — the tombstone always wins for the
+// current debounce window.
+func (c *Client) RemovePhotoIndexEntry(eventID, filename string) error {
+	c.pendingTombstonesMu.Lock()
+	if c.pendingTombstones[eventID] == nil {
+		c.pendingTombstones[eventID] = make(map[string]bool)
+	}
+	c.pendingTombstones[eventID][filename] = true
+	c.pendingTombstonesMu.Unlock()
+
+	pendingMutex.Lock()
+	existing := pendingEntries[eventID]
+	cleaned := make([]PhotoIndexEntry, 0, len(existing))
+	for _, e := range existing {
+		if e.Filename != filename {
+			cleaned = append(cleaned, e)
+		}
+	}
+	pendingEntries[eventID] = cleaned
+	pendingMutex.Unlock()
+
+	// Passing nil arms the debouncer without overwriting the pending slice
+	// we just filtered — otherwise concurrent adds staged before this delete
+	// would be lost.
+	c.SchedulePhotoIndexUpdate(eventID, nil)
+	return nil
+}
+
+// SchedulePhotoIndexFlush is a poke that ensures whatever is currently in
+// pendingEntries[eventID] gets flushed to disk — it (re)arms the 2s debouncer
+// with the current entries. Useful on app background / event switch so
+// queued-but-not-yet-flushed adds don't get dropped.
+func (c *Client) SchedulePhotoIndexFlush(eventID string) error {
+	pendingMutex.Lock()
+	entries := pendingEntries[eventID]
+	pendingMutex.Unlock()
+
+	if len(entries) > 0 {
+		c.SchedulePhotoIndexUpdate(eventID, entries)
+	}
+	return nil
 }
