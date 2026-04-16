@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -225,12 +226,28 @@ func (c *Client) StopMetaWatcher(eventID string) error {
 	return nil
 }
 
-// deviceAnnouncement is the JSON written by AnnounceDevice and read by MetaWatcher.
+// PhotoIndexEntry represents a single photo/video in the device's contribution index.
+// Used for sync transparency, deduplication, Photo Map, and location clustering.
+type PhotoIndexEntry struct {
+	Filename  string   `json:"filename"`
+	TakenAt   string   `json:"taken_at"`            // ISO 8601, sourced from EXIF DateTimeOriginal
+	Size      int64    `json:"size"`                // Bytes
+	Hash      string   `json:"hash"`                // MD5 over raw file bytes
+	Latitude  *float64 `json:"latitude,omitempty"`  // GPS from EXIF; nil if unavailable
+	Longitude *float64 `json:"longitude,omitempty"` // GPS from EXIF; nil if unavailable
+}
+
+// deviceAnnouncement is the JSON written by AnnounceDevice / UpdatePhotoIndex
+// and read by MetaWatcher and peer RemotePhotoIndexStore implementations.
 type deviceAnnouncement struct {
-	DeviceID    string `json:"device_id"`
-	UserID      string `json:"user_id"`
-	Name        string `json:"name"`
-	AnnouncedAt string `json:"announced_at"`
+	DeviceID    string            `json:"device_id"`
+	UserID      string            `json:"user_id"`
+	Name        string            `json:"name"`
+	AnnouncedAt string            `json:"announced_at"`
+	PhotoIndex  []PhotoIndexEntry `json:"photo_index"`
+	LastSeen    string            `json:"last_seen"`
+	PhotoCount  int               `json:"photo_count"`
+	VideoCount  int               `json:"video_count"`
 }
 
 // AnnounceDevice writes this device's presence to the meta-folder as
@@ -291,4 +308,148 @@ func (c *Client) AnnounceDevice(eventID string, name string) error {
 	_, statErr := os.Stat(annPath)
 	log.Printf("DEBUG announceDevice: file exists after write = %v", statErr == nil)
 	return nil
+}
+
+// UpdatePhotoIndex rewrites this device's announcement JSON with a fresh
+// photo index. Counts are derived from filename extensions (.mov / .mp4
+// count as video; everything else is a photo).
+//
+// Name and AnnouncedAt are preserved from the existing announcement so that
+// repeated UpdatePhotoIndex calls do not clobber the identity fields that
+// AnnounceDevice is responsible for. LastSeen is refreshed on every call.
+//
+// Matches AnnounceDevice's non-atomic os.WriteFile pattern for consistency;
+// Syncthing's meta-folder sync tolerates the occasional partial read.
+func (c *Client) UpdatePhotoIndex(eventID string, entries []PhotoIndexEntry) error {
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Filename < entries[j].Filename
+	})
+
+	photoCount := 0
+	videoCount := 0
+	for _, e := range entries {
+		ext := strings.ToLower(filepath.Ext(e.Filename))
+		if ext == ".mov" || ext == ".mp4" {
+			videoCount++
+		} else {
+			photoCount++
+		}
+	}
+
+	devicesDir := filepath.Join(c.dataDir, "meta-"+eventID, "devices")
+	if err := os.MkdirAll(devicesDir, 0700); err != nil {
+		return fmt.Errorf("creating devices dir: %w", err)
+	}
+
+	deviceIDLower := strings.ToLower(c.deviceID)
+	annPath := filepath.Join(devicesDir, deviceIDLower+".json")
+
+	// Preserve Name + AnnouncedAt from any existing announcement. Only
+	// AnnounceDevice knows the display name — debounced index flushes must
+	// not blank it out.
+	var name, announcedAt string
+	if existing, err := os.ReadFile(annPath); err == nil {
+		var prev deviceAnnouncement
+		if json.Unmarshal(existing, &prev) == nil {
+			name = prev.Name
+			announcedAt = prev.AnnouncedAt
+		}
+	}
+	if announcedAt == "" {
+		announcedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	ann := deviceAnnouncement{
+		DeviceID:    deviceIDLower,
+		UserID:      c.folderIdentity(),
+		Name:        name,
+		AnnouncedAt: announcedAt,
+		PhotoIndex:  entries,
+		LastSeen:    time.Now().UTC().Format(time.RFC3339),
+		PhotoCount:  photoCount,
+		VideoCount:  videoCount,
+	}
+
+	data, err := json.MarshalIndent(ann, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling announcement: %w", err)
+	}
+
+	if err := os.WriteFile(annPath, data, 0600); err != nil {
+		if !errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("writing photo index announcement: %w", err)
+		}
+	}
+	return nil
+}
+
+// PhotoIndexInfo carries per-filename metadata returned by
+// GetPhotoIndexForEvent: EXIF takenAt, contributing userID, and the full
+// PhotoIndexEntry payload (size/hash/GPS). Serialized as the value type of
+// the returned JSON map. gomobile skips binding this struct directly
+// (because of the *float64 fields), but that is fine — it is only
+// JSON-serialized, never crossed over the Objc boundary.
+type PhotoIndexInfo struct {
+	TakenAt   string   `json:"taken_at"`
+	UserID    string   `json:"user_id"`
+	Size      int64    `json:"size"`
+	Hash      string   `json:"hash"`
+	Latitude  *float64 `json:"latitude,omitempty"`
+	Longitude *float64 `json:"longitude,omitempty"`
+}
+
+// GetPhotoIndexForEvent flattens the photo_index arrays from every device
+// announcement in meta-{eventID}/devices/*.json into a single
+// filename → PhotoIndexInfo map and returns it as a JSON-encoded string.
+//
+// Return shape:
+//
+//	{"IMG_0001.JPG": {"taken_at": "2025-04-16T10:00:00Z", "user_id": "abc"}, ...}
+//
+// If the same filename appears in multiple devices, the last-read entry
+// wins; takenAt is EXIF-sourced so collisions resolve to identical values
+// in practice. A missing devices directory returns "{}" (not an error).
+//
+// Gomobile-friendly: string return is bridged to NSString, error to NSError**.
+func (c *Client) GetPhotoIndexForEvent(eventID string) (string, error) {
+	devicesDir := filepath.Join(c.dataDir, "meta-"+eventID, "devices")
+
+	entries, err := os.ReadDir(devicesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "{}", nil
+		}
+		return "", fmt.Errorf("reading devices dir: %w", err)
+	}
+
+	result := make(map[string]PhotoIndexInfo)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(devicesDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var ann deviceAnnouncement
+		if err := json.Unmarshal(data, &ann); err != nil {
+			continue
+		}
+		for _, pe := range ann.PhotoIndex {
+			result[pe.Filename] = PhotoIndexInfo{
+				TakenAt:   pe.TakenAt,
+				UserID:    ann.UserID,
+				Size:      pe.Size,
+				Hash:      pe.Hash,
+				Latitude:  pe.Latitude,
+				Longitude: pe.Longitude,
+			}
+		}
+	}
+
+	out, err := json.Marshal(result)
+	if err != nil {
+		return "", fmt.Errorf("marshaling photo index: %w", err)
+	}
+	return string(out), nil
 }
