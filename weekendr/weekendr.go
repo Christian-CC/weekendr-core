@@ -13,7 +13,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.38"
+const Version = "0.1.39"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }

@@ -26,15 +26,16 @@ type EventState string
 
 // Event holds the metadata for a Weekendr event.
 type Event struct {
-	ID            string
-	Name          string
-	HostDeviceID  string
-	Mode          string
-	State         string
-	StartsAt      int64
-	EndsAt        int64
-	PhotoFolderID string // "photos-{eventID}-{userID}"
-	MetaFolderID  string // "meta-{eventID}"
+	ID              string
+	Name            string
+	HostDeviceID    string
+	Mode            string
+	State           string
+	StartsAt        int64
+	EndsAt          int64
+	PhotoFolderID   string // "photos-{eventID}-{userID}"
+	MetaFolderID    string // "meta-{eventID}"
+	LocationWeather bool   // opt-in toggle from CreateEventParams; JoinEvent/GetEvent are stubs so the field is only reliably set on the CreateEvent path today
 }
 
 // CreateEventParams holds the parameters for creating a new event.
@@ -211,10 +212,11 @@ func (c *Client) CreateEvent(params *CreateEventParams) (*Event, error) {
 		eventID = generateEventID()
 	}
 	event := &Event{
-		ID:    eventID,
-		Name:  params.Name,
-		Mode:  params.Mode,
-		State: "upcoming",
+		ID:              eventID,
+		Name:            params.Name,
+		Mode:            params.Mode,
+		State:           "upcoming",
+		LocationWeather: params.LocationWeather,
 	}
 	if err := createEventFolders(c, event); err != nil {
 		return nil, err
