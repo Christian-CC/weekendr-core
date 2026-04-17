@@ -132,6 +132,14 @@ func (a *sushitrainAdapter) SetFolderRescanInterval(folderID string, seconds int
 	return folder.SetRescanInterval(seconds)
 }
 
+func (a *sushitrainAdapter) SetFolderPaused(folderID string, paused bool) error {
+	folder := a.st.FolderWithID(folderID)
+	if folder == nil {
+		return fmt.Errorf("folder not found: %s", folderID)
+	}
+	return folder.SetPaused(paused)
+}
+
 // PendingFolderIDs returns all folder IDs that connected peers are offering
 // but we have not yet registered locally.
 func (a *sushitrainAdapter) PendingFolderIDs() ([]string, error) {
@@ -340,6 +348,17 @@ func (c *Client) StartSyncthing(dataDir string) error {
 	// Remove Syncthing folders for events no longer in events.json or
 	// whose meta-folder has been deleted.
 	c.cleanupStaleFolders()
+
+	// Reapply the persisted photo-sync preference so a paused state survives
+	// app restart. Non-fatal if the backend rejects individual pauses — the
+	// user can retoggle from Settings.
+	if !c.IsPhotoSyncEnabled() {
+		if err := c.applyPhotoSyncState(true); err != nil {
+			log.Printf("GoCore: applyPhotoSyncState on launch: %v", err)
+		} else {
+			log.Printf("GoCore: photo sync paused on launch (preference carried from disk)")
+		}
+	}
 
 	// Signal that Syncthing is ready for use.
 	select {

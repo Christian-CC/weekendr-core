@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -82,6 +83,12 @@ type SyncthingClient interface {
 
 	// RemoveFolder unlinks a folder from Syncthing config without deleting files.
 	RemoveFolder(folderID string) error
+
+	// SetFolderPaused toggles a folder's paused state. A paused folder stops
+	// receiving / sending file data but keeps its config entry, so it can be
+	// resumed later without re-registering. Used by SetPhotoSyncEnabled to
+	// halt photo transfer while leaving meta folders running.
+	SetFolderPaused(folderID string, paused bool) error
 }
 
 // StringList wraps a string slice for gomobile compatibility (gomobile cannot
@@ -637,4 +644,65 @@ func (c *Client) SchedulePhotoIndexFlush(eventID string) error {
 		c.SchedulePhotoIndexUpdate(eventID, entries)
 	}
 	return nil
+}
+
+// photoSyncPrefPath returns the disk location of the photo-sync preference
+// flag. Presence of the file (regardless of contents) means "paused".
+func (c *Client) photoSyncPrefPath() string {
+	return filepath.Join(c.dataDir, "photo_sync_paused")
+}
+
+// IsPhotoSyncEnabled returns true if photo folders should be actively
+// syncing. The flag is persisted as the presence of a sentinel file in
+// dataDir so it survives app restarts without needing a JSON format.
+func (c *Client) IsPhotoSyncEnabled() bool {
+	_, err := os.Stat(c.photoSyncPrefPath())
+	return os.IsNotExist(err)
+}
+
+// SetPhotoSyncEnabled toggles the paused state of every photo folder
+// (photos-*) currently registered with Syncthing. Meta folders are left
+// untouched so peer announcements keep flowing and remote placeholders
+// stay visible. The flag is persisted to dataDir/photo_sync_paused so
+// StartSyncthing can reapply it on the next launch.
+func (c *Client) SetPhotoSyncEnabled(enabled bool) error {
+	prefPath := c.photoSyncPrefPath()
+	if enabled {
+		if err := os.Remove(prefPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("clearing photo sync pref: %w", err)
+		}
+	} else {
+		if err := os.WriteFile(prefPath, []byte("paused"), 0600); err != nil {
+			return fmt.Errorf("writing photo sync pref: %w", err)
+		}
+	}
+	return c.applyPhotoSyncState(!enabled)
+}
+
+// applyPhotoSyncState pauses or resumes every registered photo folder.
+// Called both from SetPhotoSyncEnabled and from StartSyncthing so that the
+// persisted preference is reflected after app restart. Safe to call when
+// syncthing is nil (no-op) or when no photo folders are registered yet.
+func (c *Client) applyPhotoSyncState(paused bool) error {
+	if c.syncthing == nil {
+		return nil
+	}
+	ids := c.syncthing.FolderIDs()
+	if ids == nil {
+		return nil
+	}
+	var firstErr error
+	for i := 0; i < ids.Size(); i++ {
+		folderID := ids.Get(i)
+		if !strings.HasPrefix(folderID, "photos-") {
+			continue
+		}
+		if err := c.syncthing.SetFolderPaused(folderID, paused); err != nil {
+			fmt.Println("GoCore: applyPhotoSyncState: SetFolderPaused(" + folderID + "): " + err.Error())
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
