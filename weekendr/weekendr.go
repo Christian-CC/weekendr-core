@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.39"
+const Version = "0.1.44"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -565,6 +566,8 @@ func (c *Client) AddPhotoIndexEntry(eventID, filename, takenAt string, size int6
 	pendingEntries[eventID] = filtered
 	pendingMutex.Unlock()
 
+	log.Printf("GoCore: AddPhotoIndexEntry eventID=%s filename=%s pending=%d", eventID, filename, len(filtered))
+
 	// A prior RemovePhotoIndexEntry in the same debounce window would have
 	// set a tombstone for this filename; clear it so the merge does not
 	// delete the re-added entry. Must happen before SchedulePhotoIndexUpdate
@@ -666,6 +669,7 @@ func (c *Client) IsPhotoSyncEnabled() bool {
 // stay visible. The flag is persisted to dataDir/photo_sync_paused so
 // StartSyncthing can reapply it on the next launch.
 func (c *Client) SetPhotoSyncEnabled(enabled bool) error {
+	log.Printf("[PAUSE] SetPhotoSyncEnabled(enabled=%v) ENTRY", enabled)
 	prefPath := c.photoSyncPrefPath()
 	if enabled {
 		if err := os.Remove(prefPath); err != nil && !os.IsNotExist(err) {
@@ -676,7 +680,27 @@ func (c *Client) SetPhotoSyncEnabled(enabled bool) error {
 			return fmt.Errorf("writing photo sync pref: %w", err)
 		}
 	}
+	log.Printf("[PAUSE] sentinel written, applying paused=%v", !enabled)
 	return c.applyPhotoSyncState(!enabled)
+}
+
+// shouldRegisterAsPaused returns true when a freshly-registered folder should
+// be flipped to Paused immediately after AddFolder. Two conditions must hold:
+//  1. The folder ID belongs to a photo folder (prefix "photos-"). Meta folders
+//     stay active so peer announcements and remote placeholders keep flowing.
+//  2. The user has globally paused photo sync, indicated by the sentinel file
+//     dataDir/photo_sync_paused.
+//
+// Used by the syncthing adapter as a defensive guard against AddSpecialFolder
+// always writing Paused=false: every freshly-registered photo folder during a
+// global pause gets its Paused flag re-asserted before any cluster-config
+// negotiation can hand off data.
+func (c *Client) shouldRegisterAsPaused(folderID string) bool {
+	if !strings.HasPrefix(folderID, "photos-") {
+		return false
+	}
+	_, err := os.Stat(c.photoSyncPrefPath())
+	return err == nil
 }
 
 // applyPhotoSyncState pauses or resumes every registered photo folder.
@@ -685,19 +709,25 @@ func (c *Client) SetPhotoSyncEnabled(enabled bool) error {
 // syncthing is nil (no-op) or when no photo folders are registered yet.
 func (c *Client) applyPhotoSyncState(paused bool) error {
 	if c.syncthing == nil {
+		log.Printf("[PAUSE] applyPhotoSyncState: c.syncthing is nil — SKIP")
 		return nil
 	}
 	ids := c.syncthing.FolderIDs()
 	if ids == nil {
+		log.Printf("[PAUSE] applyPhotoSyncState(paused=%v): FolderIDs returned nil — SKIP", paused)
 		return nil
 	}
+	log.Printf("[PAUSE] applyPhotoSyncState(paused=%v) FolderIDs.Size=%d", paused, ids.Size())
 	var firstErr error
 	for i := 0; i < ids.Size(); i++ {
 		folderID := ids.Get(i)
+		log.Printf("[PAUSE] folder[%d]=%s", i, folderID)
 		if !strings.HasPrefix(folderID, "photos-") {
 			continue
 		}
-		if err := c.syncthing.SetFolderPaused(folderID, paused); err != nil {
+		err := c.syncthing.SetFolderPaused(folderID, paused)
+		log.Printf("[PAUSE] SetFolderPaused(%s, %v) → err=%v", folderID, paused, err)
+		if err != nil {
 			fmt.Println("GoCore: applyPhotoSyncState: SetFolderPaused(" + folderID + "): " + err.Error())
 			if firstErr == nil {
 				firstErr = err

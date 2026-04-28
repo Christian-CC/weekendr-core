@@ -275,6 +275,7 @@ func (c *Client) ensureFoldersRegistered(eventID string) error {
 	if err := os.MkdirAll(filepath.Join(metaPath, ".stfolder"), 0755); err != nil {
 		return fmt.Errorf("creating meta .stfolder marker: %w", err)
 	}
+	log.Printf("[PAUSE-CONFLICT-CANDIDATE] event.go ensureFoldersRegistered calling AddFolder for %s (caller: ensureFoldersRegistered)", metaFolderID)
 	if err := c.syncthing.AddFolder(metaFolderID, metaPath, "sendreceive"); err != nil {
 		return fmt.Errorf("registering meta folder with Syncthing: %w", err)
 	}
@@ -288,6 +289,7 @@ func (c *Client) ensureFoldersRegistered(eventID string) error {
 	if err := os.MkdirAll(filepath.Join(photoPath, ".stfolder"), 0755); err != nil {
 		return fmt.Errorf("creating photo .stfolder marker: %w", err)
 	}
+	log.Printf("[PAUSE-CONFLICT-CANDIDATE] event.go ensureFoldersRegistered calling AddFolder for %s (caller: ensureFoldersRegistered)", photoFolderID)
 	if err := c.syncthing.AddFolder(photoFolderID, photoPath, "sendonly"); err != nil {
 		return fmt.Errorf("registering photo folder with Syncthing: %w", err)
 	}
@@ -384,6 +386,7 @@ func (c *Client) BootstrapConnection(eventID, hostDeviceID string) error {
 		log.Printf("GoCore: BootstrapConnection mkdir host .stfolder error: %v", err)
 	}
 	log.Printf("GoCore: BootstrapConnection — about to AddFolder hostPhotoFolderID=%s hostPhotoPath=%s", hostPhotoFolderID, hostPhotoPath)
+	log.Printf("[PAUSE-CONFLICT-CANDIDATE] event.go BootstrapConnection calling AddFolder for %s (caller: BootstrapConnection)", hostPhotoFolderID)
 	if err := c.syncthing.AddFolder(hostPhotoFolderID, hostPhotoPath, "receiveonly"); err != nil {
 		log.Printf("GoCore: BootstrapConnection AddFolder host photos error: %v", err)
 	}
@@ -477,6 +480,7 @@ func (c *Client) addParticipantPhotoFolder(eventID, participantDeviceID, partici
 
 	// 2. Register a ReceiveOnly folder to pull the participant's photos (idempotent — skip if exists).
 	if !c.syncthing.FolderExists(participantPhotoFolderID) {
+		log.Printf("[PAUSE-CONFLICT-CANDIDATE] event.go addParticipantPhotoFolder calling AddFolder for %s (caller: addParticipantPhotoFolder)", participantPhotoFolderID)
 		if err := c.syncthing.AddFolder(participantPhotoFolderID, participantPath, "receiveonly"); err != nil {
 			return fmt.Errorf("registering participant photo folder with Syncthing: %w", err)
 		}

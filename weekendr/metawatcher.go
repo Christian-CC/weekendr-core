@@ -140,6 +140,13 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 					if !strings.HasSuffix(name, ".json") {
 						continue
 					}
+					// Syncthing-generated conflict copies must never be promoted
+					// to a participant: the filename suffix encodes a timestamp,
+					// not a device id, and would corrupt knownDevices/folder
+					// registration if treated as one.
+					if strings.Contains(name, ".sync-conflict-") {
+						continue
+					}
 					// Primary source: deviceID is encoded in the filename.
 					deviceID := strings.ToLower(strings.TrimSuffix(name, ".json"))
 
@@ -209,6 +216,7 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 				return
 			case <-ticker.C:
 				log.Printf("GoCore: hub catch-up tick for event %s", eventIDLower)
+				log.Printf("[PAUSE-CONFLICT-CANDIDATE] metawatcher 60s tick: shareKnownReceiveOnlyFoldersWithHub iteration: event=%s", eventIDLower)
 				c.shareKnownReceiveOnlyFoldersWithHub(eventIDLower)
 			}
 		}
@@ -307,6 +315,14 @@ func (c *Client) AnnounceDevice(eventID string, name string) error {
 	log.Printf("DEBUG announceDevice: wrote %s", annPath)
 	_, statErr := os.Stat(annPath)
 	log.Printf("DEBUG announceDevice: file exists after write = %v", statErr == nil)
+
+	// Same-process writes are not picked up by Syncthing's fsWatcher, so the
+	// peer never gets the index update announced. Trigger an explicit rescan.
+	metaFolderID := "meta-" + eventID
+	log.Printf("GoCore: rescan %s after AnnounceDevice (name=%s)", metaFolderID, name)
+	if err := c.RescanFolder(metaFolderID); err != nil {
+		log.Printf("GoCore: rescan %s after AnnounceDevice failed: %v", metaFolderID, err)
+	}
 	return nil
 }
 
@@ -321,6 +337,7 @@ func (c *Client) AnnounceDevice(eventID string, name string) error {
 // Matches AnnounceDevice's non-atomic os.WriteFile pattern for consistency;
 // Syncthing's meta-folder sync tolerates the occasional partial read.
 func (c *Client) UpdatePhotoIndex(eventID string, entries []PhotoIndexEntry) error {
+	log.Printf("GoCore: UpdatePhotoIndex eventID=%s entries=%d", eventID, len(entries))
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].Filename < entries[j].Filename
 	})
@@ -380,6 +397,14 @@ func (c *Client) UpdatePhotoIndex(eventID string, entries []PhotoIndexEntry) err
 			return fmt.Errorf("writing photo index announcement: %w", err)
 		}
 	}
+
+	// Same-process writes are not picked up by Syncthing's fsWatcher, so the
+	// peer never gets the index update announced. Trigger an explicit rescan.
+	metaFolderID := "meta-" + eventID
+	log.Printf("GoCore: rescan %s after UpdatePhotoIndex (entries=%d)", metaFolderID, len(entries))
+	if err := c.RescanFolder(metaFolderID); err != nil {
+		log.Printf("GoCore: rescan %s after UpdatePhotoIndex failed: %v", metaFolderID, err)
+	}
 	return nil
 }
 
@@ -400,15 +425,15 @@ type PhotoIndexInfo struct {
 
 // GetPhotoIndexForEvent flattens the photo_index arrays from every device
 // announcement in meta-{eventID}/devices/*.json into a single
-// filename → PhotoIndexInfo map and returns it as a JSON-encoded string.
+// "userID/filename" → PhotoIndexInfo map and returns it as a JSON-encoded
+// string. The composite key keeps contributions distinct when two users
+// export a photo with the same filename (e.g. IMG_0001.JPG from two iPhones).
 //
 // Return shape:
 //
-//	{"IMG_0001.JPG": {"taken_at": "2025-04-16T10:00:00Z", "user_id": "abc"}, ...}
+//	{"abc/IMG_0001.JPG": {"taken_at": "2025-04-16T10:00:00Z", "user_id": "abc"}, ...}
 //
-// If the same filename appears in multiple devices, the last-read entry
-// wins; takenAt is EXIF-sourced so collisions resolve to identical values
-// in practice. A missing devices directory returns "{}" (not an error).
+// A missing devices directory returns "{}" (not an error).
 //
 // Gomobile-friendly: string return is bridged to NSString, error to NSError**.
 func (c *Client) GetPhotoIndexForEvent(eventID string) (string, error) {
@@ -427,6 +452,12 @@ func (c *Client) GetPhotoIndexForEvent(eventID string) (string, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
+		// Skip Syncthing conflict copies — their photo_index would otherwise
+		// be merged in alongside the live announcement and produce duplicate
+		// composite keys with stale data.
+		if strings.Contains(entry.Name(), ".sync-conflict-") {
+			continue
+		}
 		data, err := os.ReadFile(filepath.Join(devicesDir, entry.Name()))
 		if err != nil {
 			continue
@@ -436,7 +467,7 @@ func (c *Client) GetPhotoIndexForEvent(eventID string) (string, error) {
 			continue
 		}
 		for _, pe := range ann.PhotoIndex {
-			result[pe.Filename] = PhotoIndexInfo{
+			result[ann.UserID+"/"+pe.Filename] = PhotoIndexInfo{
 				TakenAt:   pe.TakenAt,
 				UserID:    ann.UserID,
 				Size:      pe.Size,

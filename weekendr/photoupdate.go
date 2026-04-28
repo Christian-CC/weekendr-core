@@ -3,6 +3,7 @@ package weekendr
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -46,9 +47,12 @@ func (c *Client) SchedulePhotoIndexUpdate(eventID string, entries []PhotoIndexEn
 		pendingEntries[eventID] = entries
 	}
 
+	log.Printf("GoCore: SchedulePhotoIndexUpdate eventID=%s entries=%d (2s timer armed)", eventID, len(entries))
+
 	pendingUpdates[eventID] = time.AfterFunc(2*time.Second, func() {
 		pendingMutex.Lock()
 		pending := pendingEntries[eventID]
+		log.Printf("GoCore: photo index timer fired eventID=%s pending=%d", eventID, len(pending))
 		delete(pendingUpdates, eventID)
 		pendingMutex.Unlock()
 
@@ -64,9 +68,11 @@ func (c *Client) SchedulePhotoIndexUpdate(eventID string, entries []PhotoIndexEn
 
 		merged, err := mergePendingWithDisk(c, eventID, pending, tombstones)
 		if err != nil {
+			log.Printf("GoCore: mergePendingWithDisk failed eventID=%s err=%v", eventID, err)
 			return
 		}
 		if err := c.UpdatePhotoIndex(eventID, merged); err != nil {
+			log.Printf("GoCore: UpdatePhotoIndex failed eventID=%s err=%v", eventID, err)
 			return
 		}
 

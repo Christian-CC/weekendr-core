@@ -940,6 +940,7 @@ func (clt *Client) AddSpecialFolder(folderID string, fsType string, folderPath s
 	folderConfig.Paused = false
 
 	// Add to configuration
+	slog.Info("[PAUSE-CONFLICT] AddSpecialFolder OVERWRITING with Paused=false", "id", folderID, "type", folderType)
 	err := clt.changeConfiguration(func(cfg *config.Configuration) {
 		cfg.SetFolder(folderConfig)
 	})
@@ -976,6 +977,7 @@ func (clt *Client) AddFolder(folderID string, folderPath string, createAsOnDeman
 	}
 
 	// Add to configuration
+	slog.Info("[PAUSE-CONFLICT] AddFolder OVERWRITING with Paused=false", "id", folderID, "createAsOnDemand", createAsOnDemand, "createAsReceiveEncrypted", createAsReceiveEncrypted)
 	err := clt.changeConfiguration(func(cfg *config.Configuration) {
 		cfg.SetFolder(folderConfig)
 	})

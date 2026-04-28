@@ -164,7 +164,8 @@ func (fld *Folder) IsPaused() bool {
 }
 
 func (fld *Folder) SetPaused(paused bool) error {
-	return fld.client.changeConfiguration(func(cfg *config.Configuration) {
+	slog.Info("[PAUSE] Folder.SetPaused", "id", fld.FolderID, "paused", paused)
+	err := fld.client.changeConfiguration(func(cfg *config.Configuration) {
 		config := fld.folderConfiguration()
 		if config == nil {
 			return
@@ -172,6 +173,8 @@ func (fld *Folder) SetPaused(paused bool) error {
 		config.Paused = paused
 		cfg.SetFolder(*config)
 	})
+	slog.Info("[PAUSE] Folder.SetPaused done", "id", fld.FolderID, "isPaused", fld.IsPaused(), "err", err)
+	return err
 }
 
 func (fld *Folder) IsWatcherEnabled() bool {

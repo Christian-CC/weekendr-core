@@ -18,10 +18,31 @@ import (
 // gomobile two-runtime crash on iOS.
 type sushitrainAdapter struct {
 	st *sushitrain.Client
+	wc *Client
 }
 
 func (a *sushitrainAdapter) AddFolder(folderID, folderPath, folderType string) error {
-	return a.st.AddSpecialFolder(folderID, "basic", folderPath, folderType)
+	if err := a.st.AddSpecialFolder(folderID, "basic", folderPath, folderType); err != nil {
+		return err
+	}
+	// Defensive: AddSpecialFolder unconditionally writes Paused=false. If the
+	// user has globally paused photo sync, immediately re-assert Paused=true on
+	// the freshly-registered photo folder so concurrent registrations
+	// (acceptPendingFolders ticker, addParticipantPhotoFolder, mid-pause event
+	// joins) don't silently un-pause sync.
+	if a.wc != nil && a.wc.shouldRegisterAsPaused(folderID) {
+		folder := a.st.FolderWithID(folderID)
+		if folder == nil {
+			log.Printf("[PAUSE-DEFENSIVE] folderID=%s lookup returned nil after AddFolder — defensive SKIPPED", folderID)
+			return nil
+		}
+		if err := folder.SetPaused(true); err != nil {
+			log.Printf("[PAUSE-DEFENSIVE] folderID=%s SetPaused(true) FAILED after AddFolder: %v", folderID, err)
+			return nil
+		}
+		log.Printf("[PAUSE-DEFENSIVE] folderID=%s registered with Paused=true (sentinel present)", folderID)
+	}
+	return nil
 }
 
 func (a *sushitrainAdapter) AddPeer(deviceID string) error {
@@ -134,6 +155,7 @@ func (a *sushitrainAdapter) SetFolderRescanInterval(folderID string, seconds int
 
 func (a *sushitrainAdapter) SetFolderPaused(folderID string, paused bool) error {
 	folder := a.st.FolderWithID(folderID)
+	log.Printf("[PAUSE] adapter.SetFolderPaused(%s, %v) folderExists=%v", folderID, paused, folder != nil)
 	if folder == nil {
 		return fmt.Errorf("folder not found: %s", folderID)
 	}
@@ -284,7 +306,7 @@ func (c *Client) StartSyncthing(dataDir string) error {
 
 	// Configure private servers BEFORE Start() so Syncthing never
 	// attempts to connect to public relay/discovery pools.
-	adapter := &sushitrainAdapter{st: st}
+	adapter := &sushitrainAdapter{st: st, wc: c}
 	configureServers(adapter)
 
 	// Enable relays so Syncthing can fall back to our private relay
@@ -418,6 +440,7 @@ func (c *Client) StartSyncthing(dataDir string) error {
 
 			// Auto-accept folders offered by peers since last check.
 			log.Printf("GoCore: [ticker] checking pending folders...")
+			log.Printf("[PAUSE] ticker invoking acceptPendingFolders")
 			c.acceptPendingFolders()
 		}
 	}()
@@ -588,10 +611,12 @@ func (c *Client) acceptPendingFolders() {
 		}
 
 		// Register the folder with the appropriate type.
+		log.Printf("[PAUSE-CONFLICT-CANDIDATE] acceptPendingFolders: about to AddFolder(%s, type=%s) — this will reset Paused=false", folderID, folderType)
 		if err := c.syncthing.AddFolder(folderID, folderPath, folderType); err != nil {
 			log.Printf("GoCore: acceptPendingFolders: AddFolder(%s): %v", folderID, err)
 			continue
 		}
+		log.Printf("[PAUSE-CONFLICT-CANDIDATE] acceptPendingFolders: re-registered %s as %s (caller: acceptPendingFolders)", folderID, folderType)
 
 		// Share the folder with each offering device so Syncthing syncs.
 		for _, devID := range devices {
