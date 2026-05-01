@@ -760,6 +760,12 @@ func loadOrDefaultConfig(devID protocol.DeviceID, ctx context.Context, logger ev
 				folderConfig.ScanProgressIntervalS = -1
 				conf.SetFolder(folderConfig)
 			}
+
+			// Migrate existing photo-folders to smallestFirst so thumbnails arrive before originals.
+			if strings.HasPrefix(folderConfig.ID, "photos-") && folderConfig.Order != config.PullOrderSmallestFirst {
+				folderConfig.Order = config.PullOrderSmallestFirst
+				conf.SetFolder(folderConfig)
+			}
 		}
 	})
 
@@ -938,6 +944,17 @@ func (clt *Client) AddSpecialFolder(folderID string, fsType string, folderPath s
 	folderConfig.Path = folderPath
 	folderConfig.Label = folderID
 	folderConfig.Paused = false
+	if strings.HasPrefix(folderID, "photos-") {
+		folderConfig.Order = config.PullOrderSmallestFirst
+		// Bulk-import 3-phase sync (skeleton → thumb → original) needs the
+		// receiver to see one index update per bulk, not one per write. With
+		// fsWatcher off and periodic rescan disabled, Syncthing only scans
+		// when we explicitly call rescanFolder — the bulk wrapper coalesces
+		// N writes into a single rescan at the end so smallestFirst can sort
+		// thumbs ahead of originals across the whole batch.
+		folderConfig.FSWatcherEnabled = false
+		folderConfig.RescanIntervalS = 0
+	}
 
 	// Add to configuration
 	slog.Info("[PAUSE-CONFLICT] AddSpecialFolder OVERWRITING with Paused=false", "id", folderID, "type", folderType)

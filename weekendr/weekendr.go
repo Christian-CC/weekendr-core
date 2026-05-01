@@ -14,7 +14,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.44"
+const Version = "0.1.46"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -249,12 +249,22 @@ func (c *Client) folderIdentity() string {
 
 // RescanFolder triggers an immediate rescan of the given folder so that
 // newly written files are picked up by Syncthing without waiting for the
-// periodic interval.
+// periodic interval. Tolerates "folder not found" — a caller may race a
+// concurrent event-leave that removed the folder; the photo or index write
+// is already on disk and a missing folder just means there is nothing left
+// to rescan.
 func (c *Client) RescanFolder(folderID string) error {
 	if c.syncthing == nil {
 		return nil
 	}
-	return c.syncthing.RescanFolder(folderID)
+	if err := c.syncthing.RescanFolder(folderID); err != nil {
+		if strings.Contains(err.Error(), "folder not found") {
+			log.Printf("GoCore: RescanFolder(%s) — folder not found, ignoring", folderID)
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // SetFolderKey stores the encryption folder key for an event.
@@ -646,6 +656,53 @@ func (c *Client) SchedulePhotoIndexFlush(eventID string) error {
 	if len(entries) > 0 {
 		c.SchedulePhotoIndexUpdate(eventID, entries)
 	}
+	return nil
+}
+
+// FlushPhotoIndexNow flushes the photo-index synchronously, bypassing the 2s
+// debouncer. The bulk-import wrapper calls this after writing N photos so the
+// meta-folder skeleton update reaches peers BEFORE the photo-folder rescan
+// announces the actual files — receivers see the index entries first, then
+// Syncthing pulls thumbs (smallestFirst) ahead of originals across the whole
+// batch. Mirrors the timer-callback in SchedulePhotoIndexUpdate, but cancels
+// any pending timer first so it does not later fire with empty state.
+func (c *Client) FlushPhotoIndexNow(eventID string) error {
+	pendingMutex.Lock()
+	if timer, exists := pendingUpdates[eventID]; exists {
+		timer.Stop()
+		delete(pendingUpdates, eventID)
+	}
+	pending := pendingEntries[eventID]
+	pendingMutex.Unlock()
+
+	c.pendingTombstonesMu.Lock()
+	var tombstones map[string]bool
+	if m := c.pendingTombstones[eventID]; len(m) > 0 {
+		tombstones = make(map[string]bool, len(m))
+		for k := range m {
+			tombstones[k] = true
+		}
+	}
+	c.pendingTombstonesMu.Unlock()
+
+	log.Printf("GoCore: FlushPhotoIndexNow eventID=%s pending=%d tombstones=%d", eventID, len(pending), len(tombstones))
+
+	merged, err := mergePendingWithDisk(c, eventID, pending, tombstones)
+	if err != nil {
+		return fmt.Errorf("merge pending with disk: %w", err)
+	}
+	if err := c.UpdatePhotoIndex(eventID, merged); err != nil {
+		return fmt.Errorf("update photo index: %w", err)
+	}
+
+	pendingMutex.Lock()
+	delete(pendingEntries, eventID)
+	pendingMutex.Unlock()
+
+	c.pendingTombstonesMu.Lock()
+	delete(c.pendingTombstones, eventID)
+	c.pendingTombstonesMu.Unlock()
+
 	return nil
 }
 
