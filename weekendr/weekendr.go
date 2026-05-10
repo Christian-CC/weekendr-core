@@ -14,7 +14,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.47"
+const Version = "0.1.48"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -95,6 +95,14 @@ type SyncthingClient interface {
 	// device still needs (i.e. the remote's outstanding pull list for that
 	// folder). Returns an empty StringList when the folder is unknown.
 	FilesNeededBy(folderID, deviceID string) (*StringList, error)
+
+	// PeerIsConnected returns true if the named peer device is currently
+	// connected. Returns false when the peer is unknown.
+	PeerIsConnected(deviceID string) bool
+
+	// PeerLastSeen returns the unix-second timestamp of the peer's last seen
+	// time, or 0 when the peer is unknown or never connected.
+	PeerLastSeen(deviceID string) int64
 }
 
 // StringList wraps a string slice for gomobile compatibility (gomobile cannot
@@ -720,6 +728,28 @@ func (c *Client) HubNeededFiles(folderID, hubDeviceID string) (*StringList, erro
 		return &StringList{}, nil
 	}
 	return c.syncthing.FilesNeededBy(folderID, hubDeviceID)
+}
+
+// PeerIsConnected returns true if the named peer device is currently connected
+// via Syncthing. Returns false when syncthing is not yet wired or the peer is
+// unknown. Caller: iOS getUsersFromMeta, populates UserInfo.online with a
+// real value instead of the prior hardcoded `true`.
+func (c *Client) PeerIsConnected(deviceID string) bool {
+	if c.syncthing == nil {
+		return false
+	}
+	return c.syncthing.PeerIsConnected(deviceID)
+}
+
+// PeerLastSeen returns the unix-second timestamp of the peer's last-seen time,
+// or 0 when syncthing is not yet wired, the peer is unknown, or the peer has
+// never connected. Caller: iOS getUsersFromMeta, populates UserInfo.lastSeen
+// with a real value instead of the prior hardcoded `Date()`.
+func (c *Client) PeerLastSeen(deviceID string) int64 {
+	if c.syncthing == nil {
+		return 0
+	}
+	return c.syncthing.PeerLastSeen(deviceID)
 }
 
 // photoSyncPrefPath returns the disk location of the photo-sync preference

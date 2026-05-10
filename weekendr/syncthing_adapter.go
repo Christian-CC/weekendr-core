@@ -172,6 +172,28 @@ func (a *sushitrainAdapter) FilesNeededBy(folderID, deviceID string) (*StringLis
 	return &StringList{items: items}, nil
 }
 
+func (a *sushitrainAdapter) PeerIsConnected(deviceID string) bool {
+	peer := a.st.PeerWithID(deviceID)
+	if peer == nil {
+		return false
+	}
+	return peer.IsConnected()
+}
+
+func (a *sushitrainAdapter) PeerLastSeen(deviceID string) int64 {
+	peer := a.st.PeerWithID(deviceID)
+	if peer == nil {
+		return 0
+	}
+	d := peer.LastSeen()
+	if d == nil {
+		return 0
+	}
+	// Sushitrain's Date only exposes UnixMilliseconds; iOS Date(unix:) takes
+	// seconds, so divide here to keep the interface contract unit-consistent.
+	return d.UnixMilliseconds() / 1000
+}
+
 func (a *sushitrainAdapter) SetFolderPaused(folderID string, paused bool) error {
 	folder := a.st.FolderWithID(folderID)
 	log.Printf("[PAUSE] adapter.SetFolderPaused(%s, %v) folderExists=%v", folderID, paused, folder != nil)
