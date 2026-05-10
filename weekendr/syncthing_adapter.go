@@ -153,6 +153,25 @@ func (a *sushitrainAdapter) SetFolderRescanInterval(folderID string, seconds int
 	return folder.SetRescanInterval(seconds)
 }
 
+func (a *sushitrainAdapter) FilesNeededBy(folderID, deviceID string) (*StringList, error) {
+	folder := a.st.FolderWithID(folderID)
+	if folder == nil {
+		return &StringList{}, nil
+	}
+	needed, err := folder.FilesNeededBy(deviceID)
+	if err != nil {
+		return nil, err
+	}
+	if needed == nil {
+		return &StringList{}, nil
+	}
+	items := make([]string, needed.Count())
+	for i := 0; i < needed.Count(); i++ {
+		items[i] = needed.ItemAt(i)
+	}
+	return &StringList{items: items}, nil
+}
+
 func (a *sushitrainAdapter) SetFolderPaused(folderID string, paused bool) error {
 	folder := a.st.FolderWithID(folderID)
 	log.Printf("[PAUSE] adapter.SetFolderPaused(%s, %v) folderExists=%v", folderID, paused, folder != nil)

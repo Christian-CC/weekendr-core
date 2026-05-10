@@ -14,7 +14,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.46"
+const Version = "0.1.47"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -90,6 +90,11 @@ type SyncthingClient interface {
 	// resumed later without re-registering. Used by SetPhotoSyncEnabled to
 	// halt photo transfer while leaving meta folders running.
 	SetFolderPaused(folderID string, paused bool) error
+
+	// FilesNeededBy returns the filenames in folderID that the given remote
+	// device still needs (i.e. the remote's outstanding pull list for that
+	// folder). Returns an empty StringList when the folder is unknown.
+	FilesNeededBy(folderID, deviceID string) (*StringList, error)
 }
 
 // StringList wraps a string slice for gomobile compatibility (gomobile cannot
@@ -704,6 +709,17 @@ func (c *Client) FlushPhotoIndexNow(eventID string) error {
 	c.pendingTombstonesMu.Unlock()
 
 	return nil
+}
+
+// HubNeededFiles returns the set of filenames in folderID that the hub device
+// still needs. Returns an empty StringList when syncthing is not yet wired or
+// the folder is unknown. Caller: iOS SyncStatusProbe, called per photo-folder
+// on foreground.
+func (c *Client) HubNeededFiles(folderID, hubDeviceID string) (*StringList, error) {
+	if c.syncthing == nil {
+		return &StringList{}, nil
+	}
+	return c.syncthing.FilesNeededBy(folderID, hubDeviceID)
 }
 
 // photoSyncPrefPath returns the disk location of the photo-sync preference
