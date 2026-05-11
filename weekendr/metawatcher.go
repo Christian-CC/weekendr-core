@@ -237,12 +237,14 @@ func (c *Client) StopMetaWatcher(eventID string) error {
 // PhotoIndexEntry represents a single photo/video in the device's contribution index.
 // Used for sync transparency, deduplication, Photo Map, and location clustering.
 type PhotoIndexEntry struct {
-	Filename  string   `json:"filename"`
-	TakenAt   string   `json:"taken_at"`            // ISO 8601, sourced from EXIF DateTimeOriginal
-	Size      int64    `json:"size"`                // Bytes
-	Hash      string   `json:"hash"`                // MD5 over raw file bytes
-	Latitude  *float64 `json:"latitude,omitempty"`  // GPS from EXIF; nil if unavailable
-	Longitude *float64 `json:"longitude,omitempty"` // GPS from EXIF; nil if unavailable
+	Filename    string   `json:"filename"`
+	TakenAt     string   `json:"taken_at"`               // ISO 8601, sourced from EXIF DateTimeOriginal
+	Size        int64    `json:"size"`                   // Bytes
+	Hash        string   `json:"hash"`                   // MD5 over raw file bytes
+	Latitude    *float64 `json:"latitude,omitempty"`     // GPS from EXIF; nil if unavailable
+	Longitude   *float64 `json:"longitude,omitempty"`    // GPS from EXIF; nil if unavailable
+	WeatherTemp *float64 `json:"weather_temp,omitempty"` // Daily max temp (°C) from Open-Meteo; nil until enriched
+	WeatherCode *int     `json:"weather_code,omitempty"` // WMO weather code from Open-Meteo; nil until enriched
 }
 
 // deviceAnnouncement is the JSON written by AnnounceDevice / UpdatePhotoIndex
@@ -415,12 +417,14 @@ func (c *Client) UpdatePhotoIndex(eventID string, entries []PhotoIndexEntry) err
 // (because of the *float64 fields), but that is fine — it is only
 // JSON-serialized, never crossed over the Objc boundary.
 type PhotoIndexInfo struct {
-	TakenAt   string   `json:"taken_at"`
-	UserID    string   `json:"user_id"`
-	Size      int64    `json:"size"`
-	Hash      string   `json:"hash"`
-	Latitude  *float64 `json:"latitude,omitempty"`
-	Longitude *float64 `json:"longitude,omitempty"`
+	TakenAt     string   `json:"taken_at"`
+	UserID      string   `json:"user_id"`
+	Size        int64    `json:"size"`
+	Hash        string   `json:"hash"`
+	Latitude    *float64 `json:"latitude,omitempty"`
+	Longitude   *float64 `json:"longitude,omitempty"`
+	WeatherTemp *float64 `json:"weather_temp,omitempty"`
+	WeatherCode *int     `json:"weather_code,omitempty"`
 }
 
 // GetPhotoIndexForEvent flattens the photo_index arrays from every device
@@ -468,12 +472,14 @@ func (c *Client) GetPhotoIndexForEvent(eventID string) (string, error) {
 		}
 		for _, pe := range ann.PhotoIndex {
 			result[ann.UserID+"/"+pe.Filename] = PhotoIndexInfo{
-				TakenAt:   pe.TakenAt,
-				UserID:    ann.UserID,
-				Size:      pe.Size,
-				Hash:      pe.Hash,
-				Latitude:  pe.Latitude,
-				Longitude: pe.Longitude,
+				TakenAt:     pe.TakenAt,
+				UserID:      ann.UserID,
+				Size:        pe.Size,
+				Hash:        pe.Hash,
+				Latitude:    pe.Latitude,
+				Longitude:   pe.Longitude,
+				WeatherTemp: pe.WeatherTemp,
+				WeatherCode: pe.WeatherCode,
 			}
 		}
 	}

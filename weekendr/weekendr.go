@@ -14,7 +14,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.48"
+const Version = "0.1.49"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -717,6 +717,65 @@ func (c *Client) FlushPhotoIndexNow(eventID string) error {
 	c.pendingTombstonesMu.Unlock()
 
 	return nil
+}
+
+// EnrichPhotoIndexWeather walks this device's on-disk photo index for eventID,
+// looks up the daily weather (max temp + WMO code) via Open-Meteo for every
+// entry that has GPS coordinates but no weather yet, and rewrites the
+// announcement with the enriched entries. Lookups are rate-limited to one per
+// second to stay well under Open-Meteo's free-tier limits.
+//
+// This performs blocking network I/O and is meant to run from a goroutine
+// (see StartPhotoIndexWeatherEnrichment) — never from the photo-index flush
+// path, which must stay fast so peers receive the index promptly.
+//
+// Note: concurrent AddPhotoIndexEntry calls for the same filename that flush
+// before this finishes win on filename in mergePendingWithDisk and would drop
+// the weather; in practice pendingEntries is empty by the time enrichment runs.
+func (c *Client) EnrichPhotoIndexWeather(eventID string) error {
+	entries, err := mergePendingWithDisk(c, eventID, nil, nil)
+	if err != nil {
+		return fmt.Errorf("reading photo index: %w", err)
+	}
+
+	changed := false
+	for i := range entries {
+		e := &entries[i]
+		if e.Latitude == nil || e.Longitude == nil || e.WeatherTemp != nil {
+			continue
+		}
+		takenAt, ok := parseTakenAt(e.TakenAt)
+		if !ok {
+			log.Printf("GoCore: weather skip eventID=%s file=%s — unparseable takenAt %q", eventID, e.Filename, e.TakenAt)
+			continue
+		}
+		temp, code, ferr := fetchWeather(*e.Latitude, *e.Longitude, takenAt)
+		if ferr != nil {
+			log.Printf("GoCore: weather fetch failed eventID=%s file=%s err=%v", eventID, e.Filename, ferr)
+		} else if temp != nil && code != nil {
+			e.WeatherTemp = temp
+			e.WeatherCode = code
+			changed = true
+		}
+		time.Sleep(1 * time.Second) // rate-limit Open-Meteo
+	}
+
+	if !changed {
+		return nil
+	}
+	log.Printf("GoCore: EnrichPhotoIndexWeather eventID=%s — writing enriched index (%d entries)", eventID, len(entries))
+	return c.UpdatePhotoIndex(eventID, entries)
+}
+
+// StartPhotoIndexWeatherEnrichment runs EnrichPhotoIndexWeather in the
+// background. Gomobile-friendly: no return value, returns immediately. Safe to
+// call repeatedly — entries that already carry weather are skipped.
+func (c *Client) StartPhotoIndexWeatherEnrichment(eventID string) {
+	go func() {
+		if err := c.EnrichPhotoIndexWeather(eventID); err != nil {
+			log.Printf("GoCore: EnrichPhotoIndexWeather eventID=%s err=%v", eventID, err)
+		}
+	}()
 }
 
 // HubNeededFiles returns the set of filenames in folderID that the hub device
