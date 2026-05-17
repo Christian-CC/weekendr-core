@@ -33,14 +33,11 @@ func (a *sushitrainAdapter) AddFolder(folderID, folderPath, folderType string) e
 	if a.wc != nil && a.wc.shouldRegisterAsPaused(folderID) {
 		folder := a.st.FolderWithID(folderID)
 		if folder == nil {
-			log.Printf("[PAUSE-DEFENSIVE] folderID=%s lookup returned nil after AddFolder — defensive SKIPPED", folderID)
 			return nil
 		}
 		if err := folder.SetPaused(true); err != nil {
-			log.Printf("[PAUSE-DEFENSIVE] folderID=%s SetPaused(true) FAILED after AddFolder: %v", folderID, err)
 			return nil
 		}
-		log.Printf("[PAUSE-DEFENSIVE] folderID=%s registered with Paused=true (sentinel present)", folderID)
 	}
 	return nil
 }
@@ -196,7 +193,6 @@ func (a *sushitrainAdapter) PeerLastSeen(deviceID string) int64 {
 
 func (a *sushitrainAdapter) SetFolderPaused(folderID string, paused bool) error {
 	folder := a.st.FolderWithID(folderID)
-	log.Printf("[PAUSE] adapter.SetFolderPaused(%s, %v) folderExists=%v", folderID, paused, folder != nil)
 	if folder == nil {
 		return fmt.Errorf("folder not found: %s", folderID)
 	}
@@ -481,7 +477,6 @@ func (c *Client) StartSyncthing(dataDir string) error {
 
 			// Auto-accept folders offered by peers since last check.
 			log.Printf("GoCore: [ticker] checking pending folders...")
-			log.Printf("[PAUSE] ticker invoking acceptPendingFolders")
 			c.acceptPendingFolders()
 		}
 	}()
@@ -652,12 +647,10 @@ func (c *Client) acceptPendingFolders() {
 		}
 
 		// Register the folder with the appropriate type.
-		log.Printf("[PAUSE-CONFLICT-CANDIDATE] acceptPendingFolders: about to AddFolder(%s, type=%s) — this will reset Paused=false", folderID, folderType)
 		if err := c.syncthing.AddFolder(folderID, folderPath, folderType); err != nil {
 			log.Printf("GoCore: acceptPendingFolders: AddFolder(%s): %v", folderID, err)
 			continue
 		}
-		log.Printf("[PAUSE-CONFLICT-CANDIDATE] acceptPendingFolders: re-registered %s as %s (caller: acceptPendingFolders)", folderID, folderType)
 
 		// Share the folder with each offering device so Syncthing syncs.
 		for _, devID := range devices {

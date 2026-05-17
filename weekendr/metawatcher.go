@@ -216,7 +216,6 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 				return
 			case <-ticker.C:
 				log.Printf("GoCore: hub catch-up tick for event %s", eventIDLower)
-				log.Printf("[PAUSE-CONFLICT-CANDIDATE] metawatcher 60s tick: shareKnownReceiveOnlyFoldersWithHub iteration: event=%s", eventIDLower)
 				c.shareKnownReceiveOnlyFoldersWithHub(eventIDLower)
 			}
 		}

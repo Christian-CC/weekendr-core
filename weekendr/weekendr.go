@@ -14,7 +14,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.49"
+const Version = "0.1.50"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -831,7 +831,6 @@ func (c *Client) IsPhotoSyncEnabled() bool {
 // stay visible. The flag is persisted to dataDir/photo_sync_paused so
 // StartSyncthing can reapply it on the next launch.
 func (c *Client) SetPhotoSyncEnabled(enabled bool) error {
-	log.Printf("[PAUSE] SetPhotoSyncEnabled(enabled=%v) ENTRY", enabled)
 	prefPath := c.photoSyncPrefPath()
 	if enabled {
 		if err := os.Remove(prefPath); err != nil && !os.IsNotExist(err) {
@@ -842,7 +841,6 @@ func (c *Client) SetPhotoSyncEnabled(enabled bool) error {
 			return fmt.Errorf("writing photo sync pref: %w", err)
 		}
 	}
-	log.Printf("[PAUSE] sentinel written, applying paused=%v", !enabled)
 	return c.applyPhotoSyncState(!enabled)
 }
 
@@ -871,24 +869,19 @@ func (c *Client) shouldRegisterAsPaused(folderID string) bool {
 // syncthing is nil (no-op) or when no photo folders are registered yet.
 func (c *Client) applyPhotoSyncState(paused bool) error {
 	if c.syncthing == nil {
-		log.Printf("[PAUSE] applyPhotoSyncState: c.syncthing is nil — SKIP")
 		return nil
 	}
 	ids := c.syncthing.FolderIDs()
 	if ids == nil {
-		log.Printf("[PAUSE] applyPhotoSyncState(paused=%v): FolderIDs returned nil — SKIP", paused)
 		return nil
 	}
-	log.Printf("[PAUSE] applyPhotoSyncState(paused=%v) FolderIDs.Size=%d", paused, ids.Size())
 	var firstErr error
 	for i := 0; i < ids.Size(); i++ {
 		folderID := ids.Get(i)
-		log.Printf("[PAUSE] folder[%d]=%s", i, folderID)
 		if !strings.HasPrefix(folderID, "photos-") {
 			continue
 		}
 		err := c.syncthing.SetFolderPaused(folderID, paused)
-		log.Printf("[PAUSE] SetFolderPaused(%s, %v) → err=%v", folderID, paused, err)
 		if err != nil {
 			fmt.Println("GoCore: applyPhotoSyncState: SetFolderPaused(" + folderID + "): " + err.Error())
 			if firstErr == nil {
