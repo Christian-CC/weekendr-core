@@ -354,6 +354,9 @@ func (c *Client) StartSyncthing(dataDir string) error {
 		return fmt.Errorf("enabling relays: %w", err)
 	}
 
+	st.SetLocalAnnounceEnabled(true)
+	st.SetGlobalAnnounceEnabled(true)
+
 	// Shorter reconnect interval (default 60s is too long for mobile).
 	// This makes Syncthing retry relay connections every 10s after a
 	// disconnect, improving recovery from iOS background suspensions.
