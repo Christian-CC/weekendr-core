@@ -14,7 +14,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.50"
+const Version = "0.1.51"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -290,6 +290,58 @@ func (c *Client) SetFolderKey(eventID, folderKey string) {
 // FolderKey returns the stored folder key for an event (empty if not set).
 func (c *Client) FolderKey(eventID string) string {
 	return c.folderKeys[strings.ToLower(eventID)]
+}
+
+// LeaveEvent deregisters both folders from Syncthing, stops the meta watcher,
+// and clears all cached state for the event. Non-fatal errors are logged but
+// not returned. Idempotent: safe to call on events that are already partially
+// gone. Server-side participant removal is the caller's responsibility.
+func (c *Client) LeaveEvent(eventID string) error {
+	eventIDLower := strings.ToLower(eventID)
+	userIDLower := strings.ToLower(c.userID)
+
+	photoFolderID := "photos-" + eventIDLower + "-" + userIDLower
+	metaFolderID := "meta-" + eventIDLower
+
+	// Stop meta watcher first
+	_ = c.StopMetaWatcher(eventID)
+
+	// Deregister folders from Syncthing (non-fatal)
+	if c.syncthing != nil {
+		if err := c.syncthing.RemoveFolder(photoFolderID); err != nil {
+			log.Printf("LeaveEvent: RemoveFolder %s failed (non-fatal): %v", photoFolderID, err)
+		}
+		if err := c.syncthing.RemoveFolder(metaFolderID); err != nil {
+			log.Printf("LeaveEvent: RemoveFolder %s failed (non-fatal): %v", metaFolderID, err)
+		}
+	}
+
+	// Clear persisted hub info + folder key
+	if err := removeHubInfo(c.dataDir, eventIDLower); err != nil {
+		log.Printf("LeaveEvent: removeHubInfo failed (non-fatal): %v", err)
+	}
+
+	// Clear in-memory caches
+	delete(c.hubInfos, eventIDLower)
+	delete(c.folderKeys, eventIDLower)
+	delete(c.hubSharedFolders, photoFolderID)
+	delete(c.hubSharedFolders, metaFolderID)
+	delete(c.pendingTombstones, eventIDLower)
+
+	// Clear processedParticipants for this event
+	prefix := eventIDLower + ":"
+	for key := range c.processedParticipants {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.processedParticipants, key)
+		}
+	}
+
+	// Clear activeEventID if it matches
+	if strings.ToLower(c.activeEventID) == eventIDLower {
+		c.activeEventID = ""
+	}
+
+	return nil
 }
 
 // SharePhotoFolderWithHub registers the hub as a Syncthing peer and shares
