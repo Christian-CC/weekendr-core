@@ -115,24 +115,21 @@ func (c *Client) cleanupStaleFolders() {
 			continue // not a weekendr folder
 		}
 
-		// Extract event ID from folder ID.
-		var eventID string
-		switch {
-		case strings.HasPrefix(folderID, "photos-"):
-			// photos-{eventID}-{userID}; find the last dash to split.
-			rest := strings.TrimPrefix(folderID, "photos-")
-			if idx := strings.LastIndex(rest, "-"); idx > 0 {
-				eventID = rest[:idx]
+		// Match the folder against known events by name instead of parsing the
+		// event ID out of the folder ID. That parse is ambiguous because BOTH
+		// the event ID and the owner user ID can contain dashes
+		// (photos-{eventID}-{userID}); a naive last-dash split mis-extracted the
+		// event ID and deleted active photo folders. meta-{eventID} is an exact
+		// match; photo folders match the "photos-{eventID}-" prefix.
+		lf := strings.ToLower(folderID)
+		isKnown := false
+		for knownEvent := range knownEvents { // keys already lowercased
+			if lf == "meta-"+knownEvent || strings.HasPrefix(lf, "photos-"+knownEvent+"-") {
+				isKnown = true
+				break
 			}
-		case strings.HasPrefix(folderID, "meta-"):
-			eventID = strings.TrimPrefix(folderID, "meta-")
 		}
-
-		if eventID == "" {
-			continue
-		}
-
-		if knownEvents[eventID] {
+		if isKnown {
 			continue
 		}
 
