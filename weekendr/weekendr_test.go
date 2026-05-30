@@ -318,6 +318,22 @@ func (m *mockSyncthing) SetFolderRescanInterval(folderID string, seconds int) er
 	return nil
 }
 
+func (m *mockSyncthing) SetFolderPaused(folderID string, paused bool) error {
+	return nil
+}
+
+func (m *mockSyncthing) FilesNeededBy(folderID, deviceID string) (*StringList, error) {
+	return &StringList{}, nil
+}
+
+func (m *mockSyncthing) PeerIsConnected(deviceID string) bool {
+	return false
+}
+
+func (m *mockSyncthing) PeerLastSeen(deviceID string) int64 {
+	return 0
+}
+
 func TestP2PBootstrap(t *testing.T) {
 	c := newTestClient(t)
 	mock := &mockSyncthing{}
