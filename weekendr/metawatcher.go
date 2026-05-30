@@ -238,6 +238,7 @@ func (c *Client) StopMetaWatcher(eventID string) error {
 type PhotoIndexEntry struct {
 	Filename    string   `json:"filename"`
 	TakenAt     string   `json:"taken_at"`               // ISO 8601, sourced from EXIF DateTimeOriginal
+	UploadedAt  string   `json:"uploaded_at,omitempty"`  // RFC 3339, set by UpdatePhotoIndex when the entry first enters this device's index; preserved across re-flushes
 	Size        int64    `json:"size"`                   // Bytes
 	Hash        string   `json:"hash"`                   // MD5 over raw file bytes
 	Latitude    *float64 `json:"latitude,omitempty"`     // GPS from EXIF; nil if unavailable
@@ -364,17 +365,41 @@ func (c *Client) UpdatePhotoIndex(eventID string, entries []PhotoIndexEntry) err
 
 	// Preserve Name + AnnouncedAt from any existing announcement. Only
 	// AnnounceDevice knows the display name — debounced index flushes must
-	// not blank it out.
+	// not blank it out. Also carry forward each entry's UploadedAt: the
+	// incoming entries are rebuilt from disk on every flush and don't know
+	// when a photo first entered the index, so without preserving this the
+	// upload time would reset on every re-flush (the bug "last photo" had
+	// when it was derived from the announcement file's mtime).
 	var name, announcedAt string
+	prevUploadedAt := map[string]string{}
 	if existing, err := os.ReadFile(annPath); err == nil {
 		var prev deviceAnnouncement
 		if json.Unmarshal(existing, &prev) == nil {
 			name = prev.Name
 			announcedAt = prev.AnnouncedAt
+			for _, e := range prev.PhotoIndex {
+				if e.UploadedAt != "" {
+					prevUploadedAt[e.Filename] = e.UploadedAt
+				}
+			}
 		}
 	}
 	if announcedAt == "" {
 		announcedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	// Stamp UploadedAt: keep the prior value for known filenames, set "now"
+	// for filenames appearing for the first time.
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := range entries {
+		if entries[i].UploadedAt != "" {
+			continue
+		}
+		if prev, ok := prevUploadedAt[entries[i].Filename]; ok {
+			entries[i].UploadedAt = prev
+		} else {
+			entries[i].UploadedAt = now
+		}
 	}
 
 	ann := deviceAnnouncement{
