@@ -95,6 +95,19 @@ func (a *sushitrainAdapter) FolderSharedWith(folderID, deviceID string) bool {
 	return false
 }
 
+// FolderSharedWithEncrypted returns true if folderID already has deviceID as
+// a peer with exactly the given encryptionPassword. Delegates to the
+// Folder-level check in SushitrainCore so this reads the same live Syncthing
+// config as ShareWithDevice writes to — a mismatch here always coincides
+// with a mismatch in the Devices slice that ShareWithDevice manipulates.
+func (a *sushitrainAdapter) FolderSharedWithEncrypted(folderID, deviceID, encryptionPassword string) bool {
+	folder := a.st.FolderWithID(folderID)
+	if folder == nil {
+		return false
+	}
+	return folder.IsSharedWithEncrypted(deviceID, encryptionPassword)
+}
+
 func (a *sushitrainAdapter) RemoveFolder(folderID string) error {
 	folder := a.st.FolderWithID(folderID)
 	if folder == nil {
@@ -119,6 +132,27 @@ func (a *sushitrainAdapter) ShareFolderEncrypted(folderID, deviceID, encryptionP
 		return err
 	}
 	log.Printf("GoCore: ShareFolderEncrypted succeeded for folder=%s device=%s", folderID, deviceID)
+	return nil
+}
+
+// UnshareFolder removes deviceID from folderID's peer list (toggle=false —
+// the removal half of ShareWithDevice, never re-adding). A no-op at the
+// Syncthing config layer if deviceID is already absent: the rebuilt Devices
+// slice is then identical in content and order to the current one, so
+// cfg.Modify's reflect.DeepEqual check in Syncthing's config wrapper skips
+// the commit entirely — no restart, no ClusterConfig resend, no reconnect.
+func (a *sushitrainAdapter) UnshareFolder(folderID, deviceID string) error {
+	log.Printf("GoCore: sushitrainAdapter.UnshareFolder('%s', '%s')", folderID, deviceID)
+	folder := a.st.FolderWithID(folderID)
+	if folder == nil {
+		log.Printf("GoCore: UnshareFolder error: folder not found: %s", folderID)
+		return fmt.Errorf("folder not found: %s", folderID)
+	}
+	if err := folder.ShareWithDevice(deviceID, false, ""); err != nil {
+		log.Printf("GoCore: UnshareFolder error: %v", err)
+		return err
+	}
+	log.Printf("GoCore: UnshareFolder succeeded for folder=%s device=%s", folderID, deviceID)
 	return nil
 }
 

@@ -248,9 +248,10 @@ func TestMetaWatcherIgnoresOwnDevice(t *testing.T) {
 
 // mockSyncthing records all calls for test assertions.
 type mockSyncthing struct {
-	addedPeers    []string
-	addedFolders  []struct{ folderID, path, folderType string }
-	sharedFolders []struct{ folderID, deviceID string }
+	addedPeers       []string
+	addedFolders     []struct{ folderID, path, folderType string }
+	sharedFolders    []struct{ folderID, deviceID, encryptionPassword string }
+	shareFolderCalls int // counts ShareFolder + ShareFolderEncrypted invocations, for idempotency assertions
 }
 
 func (m *mockSyncthing) AddFolder(folderID, folderPath, folderType string) error {
@@ -264,12 +265,14 @@ func (m *mockSyncthing) AddPeer(deviceID string) error {
 }
 
 func (m *mockSyncthing) ShareFolder(folderID, deviceID string) error {
-	m.sharedFolders = append(m.sharedFolders, struct{ folderID, deviceID string }{folderID, deviceID})
+	m.shareFolderCalls++
+	m.sharedFolders = append(m.sharedFolders, struct{ folderID, deviceID, encryptionPassword string }{folderID, deviceID, ""})
 	return nil
 }
 
 func (m *mockSyncthing) ShareFolderEncrypted(folderID, deviceID, encryptionPassword string) error {
-	m.sharedFolders = append(m.sharedFolders, struct{ folderID, deviceID string }{folderID, deviceID})
+	m.shareFolderCalls++
+	m.sharedFolders = append(m.sharedFolders, struct{ folderID, deviceID, encryptionPassword string }{folderID, deviceID, encryptionPassword})
 	return nil
 }
 
@@ -289,6 +292,26 @@ func (m *mockSyncthing) FolderSharedWith(folderID, deviceID string) bool {
 		}
 	}
 	return false
+}
+
+func (m *mockSyncthing) FolderSharedWithEncrypted(folderID, deviceID, encryptionPassword string) bool {
+	for _, s := range m.sharedFolders {
+		if s.folderID == folderID && s.deviceID == deviceID {
+			return s.encryptionPassword == encryptionPassword
+		}
+	}
+	return false
+}
+
+func (m *mockSyncthing) UnshareFolder(folderID, deviceID string) error {
+	remaining := m.sharedFolders[:0]
+	for _, s := range m.sharedFolders {
+		if s.folderID != folderID || s.deviceID != deviceID {
+			remaining = append(remaining, s)
+		}
+	}
+	m.sharedFolders = remaining
+	return nil
 }
 
 func (m *mockSyncthing) FolderIDs() *StringList {
@@ -353,13 +376,14 @@ func TestP2PBootstrap(t *testing.T) {
 	assert.Contains(t, mock.addedPeers, hostDeviceID, "AddPeer should be called with host device ID")
 
 	// Verify meta folder is shared with host.
-	expectedMeta := struct{ folderID, deviceID string }{"meta-" + eventID, hostDeviceID}
+	expectedMeta := struct{ folderID, deviceID, encryptionPassword string }{"meta-" + eventID, hostDeviceID, ""}
 	assert.Contains(t, mock.sharedFolders, expectedMeta, "meta folder should be shared with host")
 
 	// Verify photo folder is shared with host.
-	expectedPhoto := struct{ folderID, deviceID string }{
+	expectedPhoto := struct{ folderID, deviceID, encryptionPassword string }{
 		"photos-" + eventID + "-" + strings.ToLower(c.DeviceID()),
 		hostDeviceID,
+		"",
 	}
 	assert.Contains(t, mock.sharedFolders, expectedPhoto, "photo folder should be shared with host")
 }
@@ -531,4 +555,111 @@ func TestCleanupStaleFolders(t *testing.T) {
 	assert.Contains(t, remainingSlice, "photos-active-evt-"+activeDevice, "active photo folder should be kept")
 	assert.NotContains(t, remainingSlice, "meta-gone-evt", "stale meta folder should be removed")
 	assert.NotContains(t, remainingSlice, "photos-gone-evt-"+activeDevice, "stale photo folder should be removed")
+}
+
+func TestSharePhotoFolderWithHub_SkipsRedundantShare(t *testing.T) {
+	c := newTestClient(t)
+	mock := &mockSyncthing{}
+	c.SetSyncthing(mock)
+	c.SetUserID("host-user")
+
+	eventID := "redundant-share-evt"
+	eventIDLower := strings.ToLower(eventID)
+	hubDeviceID := "HUBDEV1-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
+	folderKey := "some-folder-key"
+	photoFolderID := "photos-" + eventIDLower + "-" + strings.ToLower(c.userID)
+	metaFolderID := "meta-" + eventIDLower
+
+	// Pre-register both folders so the FolderExists retry loop resolves
+	// immediately instead of sleeping.
+	mock.AddFolder(photoFolderID, "/tmp/photo", "sendonly")
+	mock.AddFolder(metaFolderID, "/tmp/meta", "sendreceive")
+
+	require.NoError(t, c.SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey, ""))
+	callsAfterFirst := mock.shareFolderCalls
+	assert.Equal(t, 2, callsAfterFirst, "first call should share both photo and meta folder")
+
+	// Second call with identical args (e.g. a second app launch, or a retry)
+	// must not touch Syncthing again — this is the guard this fix adds.
+	require.NoError(t, c.SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey, ""))
+	assert.Equal(t, callsAfterFirst, mock.shareFolderCalls, "redundant SharePhotoFolderWithHub call should not re-invoke ShareFolder/ShareFolderEncrypted")
+}
+
+func TestShareReceiveOnlyFolderWithHub_SkipsWhenAlreadySharedAcrossRestart(t *testing.T) {
+	c := newTestClient(t)
+	mock := &mockSyncthing{}
+	c.SetSyncthing(mock)
+
+	eventID := "restart-evt"
+	eventIDLower := strings.ToLower(eventID)
+	hubDeviceID := "HUBDEV1-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
+	folderKey := "some-folder-key"
+	folderID := "photos-" + eventIDLower + "-someone-else"
+	encPassword := photoEncryptionPassword(folderKey)
+
+	// Simulate the state right after an app restart: hubInfos/folderKeys
+	// rehydrated from disk (loadAllHubInfos), but c.hubSharedFolders is a
+	// fresh empty map (in-memory, doesn't survive restarts) even though the
+	// folder is, in reality, already correctly shared from before the
+	// restart — exactly the gap the in-memory guard alone can't cover.
+	c.hubInfos[eventIDLower] = &hubInfo{deviceID: hubDeviceID, address: ""}
+	c.folderKeys[eventIDLower] = folderKey
+	mock.sharedFolders = append(mock.sharedFolders, struct{ folderID, deviceID, encryptionPassword string }{folderID, hubDeviceID, encPassword})
+
+	c.shareReceiveOnlyFolderWithHub(eventID, folderID)
+
+	assert.Equal(t, 0, mock.shareFolderCalls, "already-shared-with-correct-password folder should not trigger another ShareFolderEncrypted call")
+	assert.True(t, c.hubSharedFolders[folderID], "in-memory guard should be self-healed to true after the live-state check confirms it's already shared")
+}
+
+func TestCleanupHubPhotoFolderShares(t *testing.T) {
+	c := newTestClient(t)
+	mock := &mockSyncthing{}
+	c.syncthing = mock
+
+	eventID := "ended-evt"
+	hubDeviceID := "HUBDEV1-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
+	ownUserID := strings.ToLower(c.deviceID)
+	otherUserID := "other-user"
+
+	// Simulate the state after SharePhotoFolderWithHub / shareReceiveOnlyFolderWithHub
+	// have already run: hub known, own + a participant's photo folder shared
+	// with it, plus a meta folder share that must survive cleanup untouched.
+	c.hubInfos[eventID] = &hubInfo{deviceID: hubDeviceID, address: "1.2.3.4:22000"}
+	ownPhotoFolder := "photos-" + eventID + "-" + ownUserID
+	otherPhotoFolder := "photos-" + eventID + "-" + otherUserID
+	metaFolder := "meta-" + eventID
+	mock.AddFolder(ownPhotoFolder, "/tmp/own", "sendonly")
+	mock.AddFolder(otherPhotoFolder, "/tmp/other", "receiveonly")
+	mock.AddFolder(metaFolder, "/tmp/meta", "sendreceive")
+	require.NoError(t, mock.ShareFolderEncrypted(ownPhotoFolder, hubDeviceID, "pw"))
+	require.NoError(t, mock.ShareFolderEncrypted(otherPhotoFolder, hubDeviceID, "pw"))
+	require.NoError(t, mock.ShareFolder(metaFolder, hubDeviceID))
+	c.hubSharedFolders[ownPhotoFolder] = true
+	c.hubSharedFolders[otherPhotoFolder] = true
+
+	c.CleanupHubPhotoFolderShares(eventID)
+
+	assert.False(t, mock.FolderSharedWith(ownPhotoFolder, hubDeviceID), "hub should be removed from own photo folder")
+	assert.False(t, mock.FolderSharedWith(otherPhotoFolder, hubDeviceID), "hub should be removed from participant photo folder")
+	assert.True(t, mock.FolderSharedWith(metaFolder, hubDeviceID), "meta folder share must be left untouched")
+	assert.False(t, c.hubSharedFolders[ownPhotoFolder], "in-memory share guard should be cleared for own photo folder")
+	assert.False(t, c.hubSharedFolders[otherPhotoFolder], "in-memory share guard should be cleared for participant photo folder")
+
+	// Idempotent: calling again (e.g. a second poll tick, or after an app
+	// restart that re-hydrates hubInfos from disk) must not error and must
+	// not re-add or otherwise disturb the already-clean state.
+	c.CleanupHubPhotoFolderShares(eventID)
+	assert.False(t, mock.FolderSharedWith(ownPhotoFolder, hubDeviceID))
+	assert.True(t, mock.FolderSharedWith(metaFolder, hubDeviceID))
+}
+
+func TestCleanupHubPhotoFolderSharesNoHubInfo(t *testing.T) {
+	c := newTestClient(t)
+	mock := &mockSyncthing{}
+	c.syncthing = mock
+
+	// No SharePhotoFolderWithHub ever ran for this event (c.hubInfos empty) —
+	// must be a safe no-op, not a panic or spurious folder mutation.
+	c.CleanupHubPhotoFolderShares("never-shared-evt")
 }

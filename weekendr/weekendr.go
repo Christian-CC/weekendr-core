@@ -14,7 +14,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.52"
+const Version = "0.1.54"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -81,6 +81,19 @@ type SyncthingClient interface {
 
 	// FolderSharedWith returns true if the folder is shared with the given device.
 	FolderSharedWith(folderID, deviceID string) bool
+
+	// FolderSharedWithEncrypted returns true if the folder is already shared
+	// with the given device using exactly this encryption password. Checked
+	// before ShareFolderEncrypted/ShareFolder so repeated calls (e.g. on
+	// every app launch) don't touch Syncthing config at all when nothing
+	// needs to change.
+	FolderSharedWithEncrypted(folderID, deviceID, encryptionPassword string) bool
+
+	// UnshareFolder removes a device from a folder's peer list without
+	// touching the folder itself or its other peers. Counterpart to
+	// ShareFolder/ShareFolderEncrypted. A no-op (safe to call repeatedly) if
+	// the device is not currently a peer of the folder.
+	UnshareFolder(folderID, deviceID string) error
 
 	// RemoveFolder unlinks a folder from Syncthing config without deleting files.
 	RemoveFolder(folderID string) error
@@ -149,6 +162,7 @@ type Client struct {
 	folderKeys            map[string]string   // eventID → folderKey, set by SetFolderKey
 	hubInfos              map[string]*hubInfo // eventID → hub deviceID/address, set by SharePhotoFolderWithHub
 	hubSharedFolders      map[string]bool     // folderID → true once the hub has been added as peer to that folder
+	hubPhotoCleanupDone   map[string]bool     // eventID (lowercase) → true once CleanupHubPhotoFolderShares has run
 	pendingTombstones     map[string]map[string]bool // eventID → set of filenames queued for deletion from photo_index
 	pendingTombstonesMu   sync.Mutex
 }
@@ -167,6 +181,7 @@ func NewClient(dataDir string) (*Client, error) {
 		folderKeys:            make(map[string]string),
 		hubInfos:              make(map[string]*hubInfo),
 		hubSharedFolders:      make(map[string]bool),
+		hubPhotoCleanupDone:   make(map[string]bool),
 		pendingTombstones:     make(map[string]map[string]bool),
 	}
 
@@ -441,16 +456,21 @@ func (c *Client) SharePhotoFolderWithHub(eventID, hubDeviceID, folderKey, hubAdd
 		return fmt.Errorf("photo folder not ready after timeout")
 	}
 
-	if err := c.syncthing.ShareFolderEncrypted(photoFolderID, hubDeviceID, encPassword); err != nil {
+	if c.syncthing.FolderSharedWithEncrypted(photoFolderID, hubDeviceID, encPassword) {
+		fmt.Println("GoCore: SharePhotoFolderWithHub: " + photoFolderID + " already shared with hub " + hubDeviceID + " (encrypted), skipping")
+	} else if err := c.syncthing.ShareFolderEncrypted(photoFolderID, hubDeviceID, encPassword); err != nil {
 		fmt.Println("GoCore: SharePhotoFolderWithHub: ShareFolderEncrypted error: " + err.Error())
 		return fmt.Errorf("SharePhotoFolderWithHub: share photo folder: %w", err)
+	} else {
+		fmt.Println("GoCore: SharePhotoFolderWithHub: shared " + photoFolderID + " with " + hubDeviceID + " (encrypted)")
 	}
-	fmt.Println("GoCore: SharePhotoFolderWithHub: shared " + photoFolderID + " with " + hubDeviceID + " (encrypted)")
 
 	// 3. Share meta folder with hub (no encryption)
 	metaFolderID := "meta-" + eventIDLower
 	if c.syncthing.FolderExists(metaFolderID) {
-		if err := c.syncthing.ShareFolder(metaFolderID, hubDeviceID); err != nil {
+		if c.syncthing.FolderSharedWithEncrypted(metaFolderID, hubDeviceID, "") {
+			fmt.Println("GoCore: SharePhotoFolderWithHub: " + metaFolderID + " already shared with hub " + hubDeviceID + ", skipping")
+		} else if err := c.syncthing.ShareFolder(metaFolderID, hubDeviceID); err != nil {
 			fmt.Println("GoCore: SharePhotoFolderWithHub: share meta folder error: " + err.Error())
 		} else {
 			fmt.Println("GoCore: SharePhotoFolderWithHub: shared " + metaFolderID + " with " + hubDeviceID)
@@ -591,6 +611,18 @@ func (c *Client) shareReceiveOnlyFolderWithHub(eventID, folderID string) {
 		}
 	}
 
+	// Live-state check on top of the hubSharedFolders in-memory guard above:
+	// that guard resets on every app restart, but the actual Syncthing
+	// config (and thus this check) persists — so this catches the case an
+	// app restart re-derives hub info from disk (loadAllHubInfos) before
+	// this function's first call in the new process. Self-heals the cache
+	// so later ticks in this process take the cheap in-memory fast path.
+	if c.syncthing.FolderSharedWithEncrypted(folderID, hub.deviceID, encPassword) {
+		c.hubSharedFolders[folderID] = true
+		fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: " + folderID + " already shared with hub " + hub.deviceID + ", skipping")
+		return
+	}
+
 	// Add hub as peer of the receiveonly folder using the per-event encryption
 	// password — same password the host derived in SharePhotoFolderWithHub.
 	// The hub-side device entry for us is empty (weekendr-server passes "" in
@@ -602,6 +634,66 @@ func (c *Client) shareReceiveOnlyFolderWithHub(eventID, folderID string) {
 	}
 	c.hubSharedFolders[folderID] = true
 	fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: shared " + folderID + " with hub " + hub.deviceID + " (encrypted)")
+}
+
+// CleanupHubPhotoFolderShares removes the hub as a device peer from every
+// photo folder registered locally for eventID (own sendonly folder and any
+// receiveonly folders for other participants), without touching the folders
+// themselves or their meta-folder share.
+//
+// Call once the event has reached "ended" — matching the same
+// collection-window arithmetic the server's hubAutoExit job uses to leave
+// the hub-side folder, so the client stops re-announcing a peer the hub has
+// already dropped. Deliberately does NOT touch the meta folder: the hub
+// stays a meta-folder peer indefinitely (verified: hubAutoExit only ever
+// leaves photo folders), so unsharing it here would be premature.
+//
+// Idempotent: repeated calls (e.g. every refreshEventList poll while the
+// event sits in the ended/archived list, or after an app restart) are safe.
+// Unlike ShareWithDevice(deviceID, true, ...) — see shareReceiveOnlyFolderWithHub
+// — removing an already-absent device is a true no-op at the Syncthing
+// config layer: no reordering, no config diff, no restart or reconnect. The
+// hubPhotoCleanupDone guard below only exists to skip the FolderIDs() scan
+// and log noise on repeat calls; it is not required for correctness and
+// does not need to survive an app restart (hubInfos does, via
+// loadAllHubInfos, so a restart just re-derives the same safe no-op).
+// Non-fatal by design (mirrors LeaveEvent): individual UnshareFolder errors
+// are logged and skipped rather than aborting the loop, so one problem
+// folder doesn't block cleanup of the rest. Always returns nil; the error
+// return exists for signature consistency with the other Client methods
+// gomobile exposes to Swift.
+func (c *Client) CleanupHubPhotoFolderShares(eventID string) error {
+	if c.syncthing == nil {
+		return nil
+	}
+	eventIDLower := strings.ToLower(eventID)
+	if c.hubPhotoCleanupDone[eventIDLower] {
+		return nil
+	}
+
+	hub, ok := c.hubInfos[eventIDLower]
+	if !ok || hub == nil || hub.deviceID == "" {
+		// Never shared with a hub (or hub info not persisted/loaded) — nothing to clean up.
+		c.hubPhotoCleanupDone[eventIDLower] = true
+		return nil
+	}
+
+	prefix := "photos-" + eventIDLower + "-"
+	folderIDs := c.syncthing.FolderIDs()
+	for i := 0; i < folderIDs.Size(); i++ {
+		folderID := folderIDs.Get(i)
+		if !strings.HasPrefix(folderID, prefix) {
+			continue
+		}
+		if err := c.syncthing.UnshareFolder(folderID, hub.deviceID); err != nil {
+			fmt.Println("GoCore: CleanupHubPhotoFolderShares: UnshareFolder(" + folderID + ", " + hub.deviceID + ") error: " + err.Error())
+			continue
+		}
+		delete(c.hubSharedFolders, folderID)
+		fmt.Println("GoCore: CleanupHubPhotoFolderShares: removed hub " + hub.deviceID + " from " + folderID)
+	}
+	c.hubPhotoCleanupDone[eventIDLower] = true
+	return nil
 }
 
 // photoEncryptionPassword derives the encryption password for photo folders.

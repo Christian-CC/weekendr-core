@@ -298,6 +298,24 @@ func (fld *Folder) List(prefix string, directories bool, recurse bool) (*ListOfS
 	return List(names), nil
 }
 
+// ShareWithDevice adds (toggle=true) or removes (toggle=false) deviceID as a
+// peer of this folder, with the given encryption password when adding.
+//
+// Updates the device's entry in place when it already exists, instead of
+// removing and re-appending it. Remove-then-append always moved the device
+// to the end of fc.Devices, which reorders the slice relative to any other
+// peers whenever the device wasn't already last (e.g. because Syncthing's
+// own config prepare() step re-appends the local device to the list on
+// every commit). config.Wrapper.Modify compares the full Configuration with
+// reflect.DeepEqual before committing anything (see syncthing/lib/config/
+// wrapper.go, Serve()) — a harmless reorder still fails that comparison,
+// which was confirmed to trigger a real folder restart plus a ClusterConfig
+// resend on every redundant call (see the JYK6QDH connection-flapping
+// investigation). Updating in place keeps a truly-unchanged call byte-for-
+// byte identical to the committed config, so it becomes a real no-op: no
+// restart, no ClusterConfig resend, no reconnect. A genuine change (e.g. a
+// rotated encryptionPassword) still only touches this one slot, without
+// perturbing any other device's position.
 func (fld *Folder) ShareWithDevice(deviceID string, toggle bool, encryptionPassword string) error {
 	devID, err := protocol.DeviceIDFromString(deviceID)
 	if err != nil {
@@ -310,24 +328,58 @@ func (fld *Folder) ShareWithDevice(deviceID string, toggle bool, encryptionPassw
 			return
 		}
 
-		devices := make([]config.FolderDeviceConfiguration, 0)
-		for _, fc := range fc.Devices {
-			if fc.DeviceID != devID {
-				devices = append(devices, fc)
+		existingIndex := -1
+		for i, d := range fc.Devices {
+			if d.DeviceID == devID {
+				existingIndex = i
+				break
 			}
 		}
-		fc.Devices = devices
 
-		if toggle {
+		switch {
+		case toggle && existingIndex >= 0:
+			fc.Devices[existingIndex] = config.FolderDeviceConfiguration{
+				DeviceID:           devID,
+				EncryptionPassword: encryptionPassword,
+			}
+		case toggle:
 			fc.Devices = append(fc.Devices, config.FolderDeviceConfiguration{
 				DeviceID:           devID,
 				EncryptionPassword: encryptionPassword,
 			})
+		case existingIndex >= 0:
+			fc.Devices = append(fc.Devices[:existingIndex], fc.Devices[existingIndex+1:]...)
+		default:
+			// Not currently a peer and not toggling on — nothing to do.
+			return
 		}
 
 		cfg.SetFolder(*fc)
 	})
 	return err
+}
+
+// IsSharedWithEncrypted returns true if deviceID is configured as a peer of
+// this folder with exactly the given encryptionPassword. Used as a pre-check
+// before calling ShareWithDevice at all (e.g. from weekendr's
+// SharePhotoFolderWithHub), on top of ShareWithDevice's own idempotent
+// update-in-place behavior above — avoids even the changeConfiguration
+// round-trip when nothing needs to change.
+func (fld *Folder) IsSharedWithEncrypted(deviceID, encryptionPassword string) bool {
+	devID, err := protocol.DeviceIDFromString(deviceID)
+	if err != nil {
+		return false
+	}
+	fc := fld.folderConfiguration()
+	if fc == nil {
+		return false
+	}
+	for _, d := range fc.Devices {
+		if d.DeviceID == devID {
+			return d.EncryptionPassword == encryptionPassword
+		}
+	}
+	return false
 }
 
 func (fld *Folder) sharedWith() ([]protocol.DeviceID, error) {
