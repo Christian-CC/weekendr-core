@@ -561,6 +561,17 @@ func (c *Client) shareReceiveOnlyFolderWithHub(eventID, folderID string) {
 	}
 	eventIDLower := strings.ToLower(eventID)
 
+	// The hub has been deliberately removed from this event's photo folders
+	// (ended/archived transition, see CleanupHubPhotoFolderShares) — refuse
+	// to re-add it. Without this, the metawatcher's 60s catch-up tick
+	// (shareKnownReceiveOnlyFoldersWithHub) finds hubSharedFolders[folderID]
+	// cleared by the cleanup and re-shares the folder within one tick,
+	// undoing the cleanup.
+	if c.hubPhotoCleanupDone[eventIDLower] {
+		fmt.Println("GoCore: shareReceiveOnlyFolderWithHub: hub cleanup already done for event " + eventID + ", refusing to re-share " + folderID)
+		return
+	}
+
 	// Hard chokepoint: never plain-share our OWN sendonly folder. The hub
 	// already has it as receiveencrypted (uploaded via ShareFolderEncrypted in
 	// SharePhotoFolderWithHub), so a plain ShareFolder against the hub here

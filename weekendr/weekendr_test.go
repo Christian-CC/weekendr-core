@@ -612,6 +612,37 @@ func TestShareReceiveOnlyFolderWithHub_SkipsWhenAlreadySharedAcrossRestart(t *te
 	assert.True(t, c.hubSharedFolders[folderID], "in-memory guard should be self-healed to true after the live-state check confirms it's already shared")
 }
 
+func TestShareReceiveOnlyFolderWithHub_SkipsAfterCleanup(t *testing.T) {
+	c := newTestClient(t)
+	mock := &mockSyncthing{}
+	c.SetSyncthing(mock)
+
+	eventID := "ended-evt2"
+	eventIDLower := strings.ToLower(eventID)
+	hubDeviceID := "HUBDEV1-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
+	folderKey := "some-folder-key"
+	folderID := "photos-" + eventIDLower + "-someone-else"
+
+	c.hubInfos[eventIDLower] = &hubInfo{deviceID: hubDeviceID, address: "1.2.3.4:22000"}
+	c.folderKeys[eventIDLower] = folderKey
+	mock.AddFolder(folderID, "/tmp/other", "receiveonly")
+
+	// Simulate state right after SharePhotoFolderWithHub already shared this folder.
+	require.NoError(t, mock.ShareFolderEncrypted(folderID, hubDeviceID, photoEncryptionPassword(folderKey)))
+	c.hubSharedFolders[folderID] = true
+	callsAfterShare := mock.shareFolderCalls
+
+	// Event ends — cleanup runs, unshares the folder, clears the guard.
+	require.NoError(t, c.CleanupHubPhotoFolderShares(eventID))
+	assert.False(t, mock.FolderSharedWith(folderID, hubDeviceID), "cleanup should have removed the hub")
+
+	// Simulate the metawatcher's 60s catch-up tick firing again for this event.
+	c.shareReceiveOnlyFolderWithHub(eventID, folderID)
+
+	assert.Equal(t, callsAfterShare, mock.shareFolderCalls, "catch-up tick must not re-share a folder the hub was deliberately cleaned up from")
+	assert.False(t, mock.FolderSharedWith(folderID, hubDeviceID), "hub must stay removed after an ended event's cleanup")
+}
+
 func TestCleanupHubPhotoFolderShares(t *testing.T) {
 	c := newTestClient(t)
 	mock := &mockSyncthing{}
