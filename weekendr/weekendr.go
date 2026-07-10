@@ -359,6 +359,36 @@ func (c *Client) LeaveEvent(eventID string) error {
 	return nil
 }
 
+// RepinDeviceAddress re-registers deviceID as a known Syncthing peer and
+// (re)pins its direct address, without touching folder-share state. Meant
+// for periodic re-pinning by long-lived clients (e.g. an iOS foreground
+// ticker) so a peer that dropped its dial route recovers without going
+// through a full SharePhotoFolderWithHub call. Mirrors the AddPeer +
+// SetDeviceAddresses block already inlined in SharePhotoFolderWithHub and
+// shareReceiveOnlyFolderWithHub.
+func (c *Client) RepinDeviceAddress(deviceID, address string) error {
+	if c.syncthing == nil {
+		return fmt.Errorf("syncthing not initialized")
+	}
+	if err := c.syncthing.AddPeer(deviceID); err != nil {
+		return fmt.Errorf("add peer: %w", err)
+	}
+	if address == "" {
+		return nil
+	}
+	type deviceAddresser interface {
+		SetDeviceAddresses(deviceID string, addresses []string) error
+	}
+	da, ok := c.syncthing.(deviceAddresser)
+	if !ok {
+		return nil
+	}
+	if err := da.SetDeviceAddresses(deviceID, []string{address}); err != nil {
+		return fmt.Errorf("set device addresses: %w", err)
+	}
+	return nil
+}
+
 // SharePhotoFolderWithHub registers the hub as a Syncthing peer and shares
 // this device's photo folder with it using the correct encryption password.
 // The meta folder is shared without encryption.
