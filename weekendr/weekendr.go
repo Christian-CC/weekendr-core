@@ -14,7 +14,7 @@ import (
 )
 
 // Version is incremented manually on each xcframework build.
-const Version = "0.1.54"
+const Version = "0.1.55"
 
 // CoreVersion returns the build version so Swift can read it via gomobile.
 func CoreVersion() string { return Version }
@@ -752,7 +752,9 @@ func photoEncryptionPassword(folderKey string) string {
 // bursts coalesce into a single disk write 2s after the last add.
 //
 // latitude/longitude are optional — pass nil when EXIF GPS is absent.
-func (c *Client) AddPhotoIndexEntry(eventID, filename, takenAt string, size int64, hash string, latitude, longitude *float64) error {
+// width/height are the display-oriented pixel dimensions (PHAsset.pixelWidth/
+// pixelHeight on iOS); pass 0 when unknown.
+func (c *Client) AddPhotoIndexEntry(eventID, filename, takenAt string, size int64, hash string, latitude, longitude *float64, width, height int) error {
 	entry := PhotoIndexEntry{
 		Filename:  filename,
 		TakenAt:   takenAt,
@@ -760,6 +762,8 @@ func (c *Client) AddPhotoIndexEntry(eventID, filename, takenAt string, size int6
 		Hash:      hash,
 		Latitude:  latitude,
 		Longitude: longitude,
+		Width:     width,
+		Height:    height,
 	}
 
 	pendingMutex.Lock()
@@ -794,19 +798,19 @@ func (c *Client) AddPhotoIndexEntry(eventID, filename, takenAt string, size int6
 // AddPhotoIndexEntry. gomobile cannot bridge *float64, so this variant
 // accepts latitude/longitude as plain float64 plus a hasLocation flag and
 // internally constructs the pointers expected by AddPhotoIndexEntry.
-func (c *Client) AddPhotoIndexEntryWithLocation(eventID, filename, takenAt string, size int64, hash string, hasLocation bool, latitude, longitude float64) error {
+func (c *Client) AddPhotoIndexEntryWithLocation(eventID, filename, takenAt string, size int64, hash string, hasLocation bool, latitude, longitude float64, width, height int) error {
 	var lat, lng *float64
 	if hasLocation {
 		lat = &latitude
 		lng = &longitude
 	}
-	return c.AddPhotoIndexEntry(eventID, filename, takenAt, size, hash, lat, lng)
+	return c.AddPhotoIndexEntry(eventID, filename, takenAt, size, hash, lat, lng, width, height)
 }
 
 // AddPhotoIndexEntryNoLocation is a gomobile-friendly wrapper around
 // AddPhotoIndexEntry for the no-GPS case.
-func (c *Client) AddPhotoIndexEntryNoLocation(eventID, filename, takenAt string, size int64, hash string) error {
-	return c.AddPhotoIndexEntry(eventID, filename, takenAt, size, hash, nil, nil)
+func (c *Client) AddPhotoIndexEntryNoLocation(eventID, filename, takenAt string, size int64, hash string, width, height int) error {
+	return c.AddPhotoIndexEntry(eventID, filename, takenAt, size, hash, nil, nil, width, height)
 }
 
 // RemovePhotoIndexEntry marks filename for deletion from the photo_index by

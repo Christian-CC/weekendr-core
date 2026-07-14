@@ -245,6 +245,8 @@ type PhotoIndexEntry struct {
 	Longitude   *float64 `json:"longitude,omitempty"`    // GPS from EXIF; nil if unavailable
 	WeatherTemp *float64 `json:"weather_temp,omitempty"` // Daily max temp (°C) from Open-Meteo; nil until enriched
 	WeatherCode *int     `json:"weather_code,omitempty"` // WMO weather code from Open-Meteo; nil until enriched
+	Width       int      `json:"width,omitempty"`        // PHAsset.pixelWidth; already orientation-corrected. 0/omitted for entries written before this field existed
+	Height      int      `json:"height,omitempty"`       // PHAsset.pixelHeight; already orientation-corrected. 0/omitted for entries written before this field existed
 }
 
 // deviceAnnouncement is the JSON written by AnnounceDevice / UpdatePhotoIndex
