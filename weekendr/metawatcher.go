@@ -217,6 +217,7 @@ func (c *Client) StartMetaWatcher(eventID string) error {
 			case <-ticker.C:
 				log.Printf("GoCore: hub catch-up tick for event %s", eventIDLower)
 				c.shareKnownReceiveOnlyFoldersWithHub(eventIDLower)
+				c.probeOwnPhotoSyncState(eventID)
 			}
 		}
 	}()
@@ -233,20 +234,53 @@ func (c *Client) StopMetaWatcher(eventID string) error {
 	return nil
 }
 
+// ArtifactKind identifies one physical file belonging to a PhotoIndexEntry.
+// A still photo has just ArtifactOriginal (+ ArtifactThumb once generated); a
+// Live Photo additionally has ArtifactVideo for its paired .mov, which today
+// is written to disk but never indexed (see PhotoExporter.exportLivePhoto).
+type ArtifactKind string
+
+const (
+	ArtifactOriginal ArtifactKind = "original"
+	ArtifactThumb    ArtifactKind = "thumb"
+	ArtifactVideo    ArtifactKind = "video"
+)
+
+// PhotoArtifact tracks one physical file (original, thumb, or Live-Photo
+// video companion) and which devices are known to have received it.
+// ConfirmedBy/CheckedAt are populated by the owning device only — it is the
+// only device connected to every other participant on its own outgoing
+// folder, so it is the only one that can compute this (see folder.go's
+// FilesNeededBy, generalized across SharedWithDeviceIDs instead of a single
+// hardcoded hub ID). Absent/empty until that owner-side probe exists.
+type PhotoArtifact struct {
+	Kind        ArtifactKind `json:"kind"`
+	Hash        string       `json:"hash"`
+	Size        int64        `json:"size"`
+	ConfirmedBy []string     `json:"confirmed_by,omitempty"` // deviceIDs known to have this artifact, as of CheckedAt
+	CheckedAt   string       `json:"checked_at,omitempty"`   // RFC 3339 — makes staleness visible instead of implying a live result
+}
+
 // PhotoIndexEntry represents a single photo/video in the device's contribution index.
 // Used for sync transparency, deduplication, Photo Map, and location clustering.
 type PhotoIndexEntry struct {
 	Filename    string   `json:"filename"`
 	TakenAt     string   `json:"taken_at"`               // ISO 8601, sourced from EXIF DateTimeOriginal
 	UploadedAt  string   `json:"uploaded_at,omitempty"`  // RFC 3339, set by UpdatePhotoIndex when the entry first enters this device's index; preserved across re-flushes
-	Size        int64    `json:"size"`                   // Bytes
-	Hash        string   `json:"hash"`                   // MD5 over raw file bytes
+	Size        int64    `json:"size"`                   // Bytes. Deprecated: mirrors Artifacts[original].Size — kept for old readers during migration.
+	Hash        string   `json:"hash"`                   // MD5 over raw file bytes. Deprecated: mirrors Artifacts[original].Hash — kept for old readers during migration.
 	Latitude    *float64 `json:"latitude,omitempty"`     // GPS from EXIF; nil if unavailable
 	Longitude   *float64 `json:"longitude,omitempty"`    // GPS from EXIF; nil if unavailable
 	WeatherTemp *float64 `json:"weather_temp,omitempty"` // Daily max temp (°C) from Open-Meteo; nil until enriched
 	WeatherCode *int     `json:"weather_code,omitempty"` // WMO weather code from Open-Meteo; nil until enriched
 	Width       int      `json:"width,omitempty"`        // PHAsset.pixelWidth; already orientation-corrected. 0/omitted for entries written before this field existed
 	Height      int      `json:"height,omitempty"`       // PHAsset.pixelHeight; already orientation-corrected. 0/omitted for entries written before this field existed
+
+	// Artifacts holds one entry per physical file (original/thumb/video).
+	// Additive alongside Size/Hash rather than replacing them, so existing
+	// readers (iOS PhotoIndexReader, weekendr-server's mirror struct) keep
+	// working unchanged until they migrate to reading Artifacts directly.
+	Artifacts []PhotoArtifact `json:"artifacts,omitempty"`
 }
 
 // deviceAnnouncement is the JSON written by AnnounceDevice / UpdatePhotoIndex
@@ -443,14 +477,15 @@ func (c *Client) UpdatePhotoIndex(eventID string, entries []PhotoIndexEntry) err
 // (because of the *float64 fields), but that is fine — it is only
 // JSON-serialized, never crossed over the Objc boundary.
 type PhotoIndexInfo struct {
-	TakenAt     string   `json:"taken_at"`
-	UserID      string   `json:"user_id"`
-	Size        int64    `json:"size"`
-	Hash        string   `json:"hash"`
-	Latitude    *float64 `json:"latitude,omitempty"`
-	Longitude   *float64 `json:"longitude,omitempty"`
-	WeatherTemp *float64 `json:"weather_temp,omitempty"`
-	WeatherCode *int     `json:"weather_code,omitempty"`
+	TakenAt     string          `json:"taken_at"`
+	UserID      string          `json:"user_id"`
+	Size        int64           `json:"size"`
+	Hash        string          `json:"hash"`
+	Latitude    *float64        `json:"latitude,omitempty"`
+	Longitude   *float64        `json:"longitude,omitempty"`
+	WeatherTemp *float64        `json:"weather_temp,omitempty"`
+	WeatherCode *int            `json:"weather_code,omitempty"`
+	Artifacts   []PhotoArtifact `json:"artifacts,omitempty"`
 }
 
 // GetPhotoIndexForEvent flattens the photo_index arrays from every device
@@ -506,6 +541,7 @@ func (c *Client) GetPhotoIndexForEvent(eventID string) (string, error) {
 				Longitude:   pe.Longitude,
 				WeatherTemp: pe.WeatherTemp,
 				WeatherCode: pe.WeatherCode,
+				Artifacts:   pe.Artifacts,
 			}
 		}
 	}

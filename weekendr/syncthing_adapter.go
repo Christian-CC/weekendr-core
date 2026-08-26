@@ -203,6 +203,22 @@ func (a *sushitrainAdapter) FilesNeededBy(folderID, deviceID string) (*StringLis
 	return &StringList{items: items}, nil
 }
 
+func (a *sushitrainAdapter) FolderDeviceIDs(folderID string) (*StringList, error) {
+	folder := a.st.FolderWithID(folderID)
+	if folder == nil {
+		return &StringList{}, nil
+	}
+	ids := folder.SharedWithDeviceIDs()
+	if ids == nil {
+		return &StringList{}, nil
+	}
+	items := make([]string, ids.Count())
+	for i := 0; i < ids.Count(); i++ {
+		items[i] = ids.ItemAt(i)
+	}
+	return &StringList{items: items}, nil
+}
+
 func (a *sushitrainAdapter) PeerIsConnected(deviceID string) bool {
 	peer := a.st.PeerWithID(deviceID)
 	if peer == nil {

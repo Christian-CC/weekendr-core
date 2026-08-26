@@ -349,6 +349,18 @@ func (m *mockSyncthing) FilesNeededBy(folderID, deviceID string) (*StringList, e
 	return &StringList{}, nil
 }
 
+func (m *mockSyncthing) FolderDeviceIDs(folderID string) (*StringList, error) {
+	seen := map[string]bool{}
+	var ids []string
+	for _, s := range m.sharedFolders {
+		if s.folderID == folderID && !seen[s.deviceID] {
+			seen[s.deviceID] = true
+			ids = append(ids, s.deviceID)
+		}
+	}
+	return &StringList{items: ids}, nil
+}
+
 func (m *mockSyncthing) PeerIsConnected(deviceID string) bool {
 	return false
 }

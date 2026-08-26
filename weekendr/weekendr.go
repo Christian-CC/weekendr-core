@@ -109,6 +109,12 @@ type SyncthingClient interface {
 	// folder). Returns an empty StringList when the folder is unknown.
 	FilesNeededBy(folderID, deviceID string) (*StringList, error)
 
+	// FolderDeviceIDs returns the device IDs currently shared on folderID
+	// (participants and/or the hub), or an empty list if the folder is
+	// unknown. Lets the owner-side sync probe generalize FilesNeededBy from
+	// "just the hub" to every device actually connected on the folder.
+	FolderDeviceIDs(folderID string) (*StringList, error)
+
 	// PeerIsConnected returns true if the named peer device is currently
 	// connected. Returns false when the peer is unknown.
 	PeerIsConnected(deviceID string) bool
